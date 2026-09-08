@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 
 from app.api.router import api_router
@@ -19,6 +22,7 @@ from app.core.errors import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.request_id import RequestIDMiddleware
 from app.core.responses import ok
+from app.db.connection import run_migrations
 
 __version__ = "0.1.0"
 
@@ -27,10 +31,21 @@ def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings.log_level)
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        """服务启动：应用数据库迁移（幂等，重复启动无副作用）。
+
+        迁移失败会让服务启动失败（快速失败，避免带空库/坏库运行）。
+        P0-04 将在此处追加：数据目录独占锁、3 个消费者启停、遗留任务清理。
+        """
+        await run_migrations(settings.database_path)
+        yield
+
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
         debug=settings.debug,
+        lifespan=lifespan,
     )
     app.add_middleware(RequestIDMiddleware)
     register_exception_handlers(app)
