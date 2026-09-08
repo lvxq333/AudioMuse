@@ -85,16 +85,33 @@ async def test_status_and_lifecycle_check_enforced(db_path):
 
 
 async def test_transaction_rollback(db_path):
-    """事务回滚：异常导致显式事务回滚后，数据不落库。"""
+    """事务回滚：事务中途异常经 ROLLBACK 后数据不落库。"""
     await run_migrations(db_path)
     now = now_utc_ms()
     async with db(db_path) as conn:
-        with pytest.raises(RuntimeError):
-            async with conn:
-                await conn.execute(
-                    _INSERT_RECORDING,
-                    ("r1", "a.wav", "recordings/a.wav", "wav", 1024, now, now),
-                )
-                raise RuntimeError("boom")
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            await conn.execute(
+                _INSERT_RECORDING,
+                ("r1", "a.wav", "recordings/a.wav", "wav", 1024, now, now),
+            )
+            raise RuntimeError("boom")  # 模拟事务中途失败
+        except RuntimeError:
+            await conn.rollback()
     async with db(db_path) as conn:
         assert await _count(conn, "recordings") == 0
+
+
+async def test_transaction_commit_persists(db_path):
+    """对照：事务正常 COMMIT 后数据落库（防止回滚用例误绿）。"""
+    await run_migrations(db_path)
+    now = now_utc_ms()
+    async with db(db_path) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute(
+            _INSERT_RECORDING,
+            ("r1", "a.wav", "recordings/a.wav", "wav", 1024, now, now),
+        )
+        await conn.commit()
+    async with db(db_path) as conn:
+        assert await _count(conn, "recordings") == 1
