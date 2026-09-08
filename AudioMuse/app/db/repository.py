@@ -38,7 +38,10 @@ async def create_recording_and_task(
 ) -> None:
     """在同一事务内创建录音记录与其 pending 任务；失败整体回滚。"""
     now = now or now_utc_ms()
-    async with conn:
+    # aiosqlite 的 `async with conn` 不是事务语义（会重复启动后台线程），
+    # 事务需显式 BEGIN / COMMIT / ROLLBACK。
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
         await conn.execute(
             _INSERT_RECORDING,
             (
@@ -50,3 +53,7 @@ async def create_recording_and_task(
             _INSERT_TASK,
             (task_id, recording_id, TaskStatus.PENDING.value, 1, now, now),
         )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise

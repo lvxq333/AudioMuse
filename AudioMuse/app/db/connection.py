@@ -37,7 +37,12 @@ async def connect(db_path: Path | None = None) -> aiosqlite.Connection:
 
 @asynccontextmanager
 async def db(db_path: Path | None = None) -> AsyncGenerator[aiosqlite.Connection, None]:
-    """提供连接的异步上下文；调用方可在其中用 ``async with conn:`` 开启显式事务。"""
+    """提供连接的异步上下文（仅负责连接生命周期与关闭）。
+
+    注意：aiosqlite 的 ``async with conn`` 并非事务语义（每次都会
+    thread.start()，同连接第二次起抛 RuntimeError），需要事务时请使用
+    显式 BEGIN / COMMIT / ROLLBACK（参见 app/db/repository.py）。
+    """
     conn = await connect(db_path)
     try:
         yield conn
