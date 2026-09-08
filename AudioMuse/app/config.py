@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # 录音文件与 SQLite 数据库的统一数据根目录
     data_dir: Path = ROOT_DIR / "data"
 
+    # 上传限制：单文件最大字节数（默认 50 MiB = 50 * 1024 * 1024）
+    max_upload_bytes: int = 50 * 1024 * 1024
+
     # 异步流水线：全局最多同时处理的任务数（P0 起生效）
     max_concurrency: int = 3
 
