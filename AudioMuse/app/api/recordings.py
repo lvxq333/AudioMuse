@@ -17,8 +17,10 @@ from app.db.connection import db as db_ctx
 from app.db.constants import TaskStatus
 from app.db.repository import (
     create_recording_and_task,
+    delete_recording_row,
     get_recording_with_task,
     list_recordings as repo_list_recordings,
+    mark_recording_deleting,
 )
 from app.services.storage import persist_upload, remove_file_with_retry
 
@@ -153,3 +155,50 @@ async def get_recording(request: Request, recording_id: str):
         },
         request_id=getattr(request.state, "request_id", None),
     )
+
+
+@router.delete("/{recording_id}", status_code=204)
+async def delete_recording(request: Request, recording_id: str):
+    """删除录音：置 deleting → 取消进行中处理 → 删文件 → 删数据库行。
+
+    - 404：录音不存在（或行已被删）；
+    - 5xx(RECORDING_DELETE_FAILED)：文件清理失败——保留 deleting 状态，
+      再次 DELETE 会“续扫”继续清理（已支持 deleting 行重试）；
+    - 204：删除完成（无响应体）。
+    """
+    settings = get_settings()
+    _validate_recording_id(recording_id)
+
+    async with db_ctx(settings.database_path) as conn:
+        row = await get_recording_with_task(conn, recording_id)
+    if row is None:
+        raise NotFoundError("录音不存在")
+
+    # 1) 置 deleting（首次或续扫皆可：已是 deleting 也继续走清理）
+    async with db_ctx(settings.database_path) as conn:
+        await mark_recording_deleting(conn, recording_id=recording_id)
+
+    # 2) 若该任务正在处理：取消处理器（消费者停手并继续处理其他录音）
+    registry: "TaskRegistry" = request.app.state.registry
+    registry.cancel(row["task_id"])
+
+    # 3) 删除磁盘文件（不存在视为成功；失败不删行，保留 deleting 供续扫）
+    storage_path = Path(settings.data_dir) / row["storage_path"]
+    if not await remove_file_with_retry(storage_path):
+        logger.error(
+            "删除录音文件失败（保留 deleting 供重试） recording_id=%s",
+            recording_id,
+        )
+        raise AppError(
+            "录音删除失败（文件清理失败），请稍后重试",
+            code="RECORDING_DELETE_FAILED",
+        )
+
+    # 4) 删除数据库行（tasks 经外键级联删除）
+    async with db_ctx(settings.database_path) as conn:
+        deleted = await delete_recording_row(conn, recording_id=recording_id)
+    if not deleted:
+        raise NotFoundError("录音不存在")
+
+    logger.info("录音已删除 recording_id=%s", recording_id)
+    return None  # 204 无响应体
