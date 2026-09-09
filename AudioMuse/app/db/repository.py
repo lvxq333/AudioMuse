@@ -17,8 +17,8 @@ from app.db.constants import ErrorCode, Lifecycle, TaskStatus, now_utc_ms
 _INSERT_RECORDING = """
     INSERT INTO recordings
         (id, original_filename, storage_path, extension, size_bytes,
-         lifecycle, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         lifecycle, idempotency_key, file_sha256, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _INSERT_TASK = """
@@ -60,6 +60,8 @@ async def create_recording_and_task(
     storage_relpath: str,
     extension: str,
     size_bytes: int,
+    idempotency_key: Optional[str] = None,
+    file_sha256: Optional[str] = None,
     now: int | None = None,
 ) -> None:
     """在同一事务内创建录音记录与其 pending 任务；失败整体回滚。"""
@@ -72,7 +74,8 @@ async def create_recording_and_task(
             _INSERT_RECORDING,
             (
                 recording_id, original_filename, storage_relpath, extension,
-                size_bytes, Lifecycle.ACTIVE.value, now, now,
+                size_bytes, Lifecycle.ACTIVE.value, idempotency_key,
+                file_sha256, now, now,
             ),
         )
         await conn.execute(
@@ -83,6 +86,21 @@ async def create_recording_and_task(
     except Exception:
         await conn.rollback()
         raise
+
+
+async def get_recording_by_idempotency_key(
+    conn: aiosqlite.Connection, idempotency_key: str
+) -> Optional[dict]:
+    """查询幂等键对应的录音和任务；不存在返回 None。"""
+    cursor = await conn.execute(
+        "SELECT r.id AS recording_id, r.lifecycle, r.file_sha256,"
+        " t.id AS task_id, t.status"
+        " FROM recordings r JOIN tasks t ON t.recording_id=r.id"
+        " WHERE r.idempotency_key=?",
+        (idempotency_key,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
 
 
 async def claim_next_task(
