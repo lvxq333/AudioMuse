@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger(__name__)
 
 # 建议的 HTTP 状态码约定（与需求文档一致）：
 # 400 参数/格式错误；404 资源不存在；409 状态冲突；
@@ -78,6 +81,24 @@ def _request_id(request: Request) -> str:
 
 def register_exception_handlers(app: FastAPI) -> None:
     """把异常处理器注册到应用上。"""
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
+        request_id = _request_id(request)
+        logger.error(
+            "未处理异常 request_id=%s", request_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        # 500 兜底在外层错误中间件执行，显式回写编号，避免绕过请求编号中间件。
+        return JSONResponse(
+            status_code=500,
+            content=_error_payload(
+                "INTERNAL_ERROR", "内部错误，请稍后重试", request_id
+            ),
+            headers={"X-Request-ID": request_id},
+        )
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
