@@ -2,14 +2,15 @@
 
 - 每个消费者是一个 asyncio Task（协程），共享同一事件循环；
 - 循环：原子领取一个 pending 任务 → 交给 processor 处理 → 继续；
-- processor 负责该任务领取后的全部状态流转写回（P0-05 提供真实
-  转写+摘要实现），本文件不关心处理细节；
-- 领取与写回都只在短暂瞬间持有数据库事务/写锁，处理阶段不持锁，
-  因此多个消费者可并行处理各自领取的不同录音；
+- 每个任务的处理被包装成独立子任务并登记到 TaskRegistry：
+  - 外部停止单个任务（registry.cancel）只取消该子任务——消费者捕获
+    CancelledError 后把该录音标记为可重试失败（PROCESSING_CANCELLED）
+    并继续循环，符合“停一个录音、消费者空闲继续处理其他录音”的契约；
+  - 消费者整体被停（关闭流程）时不存在取消请求标记，CancelledError
+    继续上抛导致本协程退出；
 - 队列模型（P0-04 决定）：数据库中的 pending 行即持久化队列，
   消费者按 poll_interval 轮询原子领取——服务重启后 pending 自动
-  被继续消费，无内存队列的恢复/一致性窗口；
-- 优雅退出：stop 事件置位后，处理完当前任务即退出，不再领取新任务。
+  被继续消费，无内存队列的恢复/一致性窗口。
 """
 
 from __future__ import annotations
@@ -17,10 +18,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable
 
 from app.db.connection import db
-from app.db.repository import claim_next_task
+from app.db.constants import ErrorCode
+from app.db.repository import claim_next_task, fail_task
+from app.services.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +34,22 @@ Processor = Callable[[dict], Awaitable[None]]
 _POLL_INTERVAL = 0.2  # 无任务时的轮询间隔（秒）
 
 
+async def _mark_stopped(db_path: Path, task: dict) -> None:
+    """单任务被外部停止：置为 failed(PROCESSING_CANCELLED)，可后续 retry/删除。"""
+    async with db(db_path) as conn:
+        await fail_task(
+            conn,
+            task_id=task["id"], attempt_no=task["attempt_no"],
+            error_code=ErrorCode.PROCESSING_CANCELLED.value,
+            error_message="任务处理已被停止，可重试或删除",
+        )
+
+
 async def consume_loop(
     *,
     db_path: Path,
     processor: Processor,
+    registry: TaskRegistry,
     stop: asyncio.Event,
     poll_interval: float = _POLL_INTERVAL,
 ) -> None:
@@ -47,17 +62,24 @@ async def consume_loop(
                 task = await claim_next_task(conn)
 
             if task is None:
-                # 无待处理任务：短暂退避，避免空转刷库；stop 置位后最迟
-                # poll_interval 内退出
+                # 无待处理任务：短暂退避，避免空转刷库
                 await asyncio.sleep(poll_interval)
                 continue
 
             try:
-                await processor(task)
+                proc_task = registry.start(task["id"], processor(task))
+                try:
+                    await proc_task
+                except asyncio.CancelledError:
+                    if registry.was_cancel_requested(task["id"]):
+                        # 该录音的处理被单独停止：标记可重试失败，消费者继续
+                        logger.info("任务处理被外部停止 task_id=%s", task["id"])
+                        await _mark_stopped(db_path, task)
+                        registry.ack_cancel(task["id"])
+                        continue
+                    raise  # 消费者整体被停
             except Exception:
-                # processor 应自行把失败任务写回 failed；此处仅兜底防单个
-                # 任务异常杀死消费者（任务将保持 transcribing，由后续
-                # 阶段的失败写回/启动清理兜底）
+                # processor 不应抛未分类异常；此处兜底防单个任务异常杀死消费者
                 logger.exception(
                     "处理任务异常 task_id=%s attempt_no=%s",
                     task.get("id"), task.get("attempt_no"),
@@ -73,18 +95,17 @@ async def run_consumers(
     *,
     db_path: Path,
     processor: Processor,
+    registry: TaskRegistry,
     stop: asyncio.Event,
     poll_interval: float = _POLL_INTERVAL,
 ) -> None:
-    """并发运行 count 个消费者，直到全部结束（配合 stop 优雅退出）。
-
-    调用方负责：置位 stop 后 await 本函数，等待进行中任务处理完成。
-    """
+    """并发运行 count 个消费者，直到全部结束（配合 stop 优雅退出）。"""
     consumers = [
         asyncio.create_task(
             consume_loop(
                 db_path=db_path,
                 processor=processor,
+                registry=registry,
                 stop=stop,
                 poll_interval=poll_interval,
             ),
