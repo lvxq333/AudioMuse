@@ -8,16 +8,18 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Query, Request, UploadFile
+import aiosqlite
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 
 from app.config import get_settings
-from app.core.errors import AppError, BadRequestError, NotFoundError
+from app.core.errors import AppError, BadRequestError, ConflictError, NotFoundError
 from app.core.responses import ok
 from app.db.connection import db as db_ctx
 from app.db.constants import TaskStatus
 from app.db.repository import (
     create_recording_and_task,
     delete_recording_row,
+    get_recording_by_idempotency_key,
     get_recording_with_task,
     list_recordings as repo_list_recordings,
     mark_recording_deleting,
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
 
+_MAX_IDEMPOTENCY_KEY_LENGTH = 128
+
 
 def _validate_recording_id(recording_id: str) -> None:
     """格式校验：非法 UUID 一律 400。"""
@@ -37,15 +41,46 @@ def _validate_recording_id(recording_id: str) -> None:
         raise BadRequestError("recording_id 格式不合法（应为 UUID）") from None
 
 
+def _normalize_idempotency_key(value: Optional[str]) -> Optional[str]:
+    """校验可选幂等键；键作为不透明字符串保存，仅去除首尾空白。"""
+    if value is None:
+        return None
+    key = value.strip()
+    if not key:
+        raise BadRequestError("Idempotency-Key 不能为空")
+    if len(key) > _MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise BadRequestError(
+            f"Idempotency-Key 长度不能超过 {_MAX_IDEMPOTENCY_KEY_LENGTH} 个字符"
+        )
+    return key
+
+
+async def _cleanup_new_upload(settings, stored) -> bool:
+    """清理未能创建数据库记录的新文件；失败时记录可定位信息。"""
+    target = Path(settings.data_dir) / stored.storage_relpath
+    cleaned = await remove_file_with_retry(target)
+    if not cleaned:
+        logger.error(
+            "孤儿文件清理失败，请稍后重试或人工处理 "
+            "recording_id=%s storage_relpath=%s",
+            stored.recording_id, stored.storage_relpath,
+        )
+    return cleaned
+
+
 @router.post("")
 async def upload_recording(
     request: Request,
     file: Optional[UploadFile] = File(default=None),
+    idempotency_key: Optional[str] = Header(
+        default=None, alias="Idempotency-Key"
+    ),
 ):
     """上传录音：落盘并创建 pending 任务后立即返回 202，不等待处理。"""
     settings = get_settings()
     if file is None:
         raise BadRequestError("缺少文件字段 file")
+    idempotency_key = _normalize_idempotency_key(idempotency_key)
 
     stored = await persist_upload(
         file, settings.recordings_dir, max_bytes=settings.max_upload_bytes
@@ -61,17 +96,60 @@ async def upload_recording(
                 storage_relpath=stored.storage_relpath,
                 extension=stored.extension,
                 size_bytes=stored.size_bytes,
+                idempotency_key=idempotency_key,
+                file_sha256=stored.file_sha256,
             )
+    except aiosqlite.IntegrityError as exc:
+        # 同一幂等键的并发请求由唯一索引裁决；输家清理自己的文件后复用赢家。
+        existing = None
+        if idempotency_key is not None:
+            try:
+                async with db_ctx(settings.database_path) as conn:
+                    existing = await get_recording_by_idempotency_key(
+                        conn, idempotency_key
+                    )
+            except Exception as lookup_exc:
+                await _cleanup_new_upload(settings, stored)
+                logger.error(
+                    "幂等冲突后查询原记录失败 recording_id=%s",
+                    stored.recording_id,
+                    exc_info=lookup_exc,
+                )
+                raise AppError(
+                    "录音上传失败，请稍后重试", code="UPLOAD_FAILED"
+                ) from lookup_exc
+        if not await _cleanup_new_upload(settings, stored):
+            raise AppError(
+                "上传清理失败，请稍后重试", code="UPLOAD_CLEANUP_FAILED"
+            ) from exc
+        if existing is None:
+            logger.error(
+                "上传完整性约束冲突但未找到幂等记录 recording_id=%s",
+                stored.recording_id,
+                exc_info=exc,
+            )
+            raise AppError("录音上传失败，请稍后重试", code="UPLOAD_FAILED") from exc
+        if existing["lifecycle"] != "active":
+            raise ConflictError("该 Idempotency-Key 对应的录音正在删除")
+        if existing["file_sha256"] != stored.file_sha256:
+            raise ConflictError("Idempotency-Key 已用于不同的文件")
+        logger.info(
+            "命中上传幂等记录 recording_id=%s task_id=%s",
+            existing["recording_id"], existing["task_id"],
+        )
+        return ok(
+            data={
+                "recording_id": existing["recording_id"],
+                "task_id": existing["task_id"],
+                "status": existing["status"],
+            },
+            status_code=200,
+            request_id=getattr(request.state, "request_id", None),
+        )
     except Exception as exc:
         # 文件已落盘但 DB 写入失败：先重试清理孤儿文件（相对路径入日志供人工兜底），
         # 再抛出语义明确的业务错误——避免用户看到裸 500 误以为上传成功
-        target = Path(settings.data_dir) / stored.storage_relpath
-        if not await remove_file_with_retry(target):
-            logger.error(
-                "孤儿文件清理失败，请稍后重试或人工处理 "
-                "recording_id=%s storage_relpath=%s",
-                stored.recording_id, stored.storage_relpath,
-            )
+        await _cleanup_new_upload(settings, stored)
         logger.error(
             "上传落库失败 recording_id=%s size=%d",
             stored.recording_id, stored.size_bytes,

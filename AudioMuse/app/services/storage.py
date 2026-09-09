@@ -4,12 +4,14 @@
 - 存储文件名由服务端 UUID 生成（{recording_id}.{ext}），
   原始文件名仅作元数据，不进入存储路径；
 - 先写临时文件，全部成功后再原子改名（os.replace）到正式位置；
+- 流式写入时同步计算 SHA-256，供上传幂等判断使用；
 - 任何异常（含超限、零字节）都会清理临时文件，且清理失败不掩盖原始异常。
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import uuid
@@ -39,6 +41,7 @@ class StoredUpload:
     storage_relpath: str    # 相对 data_dir 的存储路径，如 recordings/{id}.wav
     extension: str          # 小写扩展名，wav/mp3/m4a/aac 之一
     size_bytes: int         # 实际写入字节数
+    file_sha256: str        # 文件内容 SHA-256，用于上传幂等冲突校验
 
 
 def _parse_extension(filename: str) -> str:
@@ -71,6 +74,7 @@ async def persist_upload(
     tmp_path = recordings_dir / f".{recording_id}.{uuid.uuid4().hex[:8]}.tmp"
 
     size_bytes = 0
+    digest = hashlib.sha256()
     try:
         with open(tmp_path, "wb") as out:
             while True:
@@ -82,6 +86,7 @@ async def persist_upload(
                     raise PayloadTooLargeError(
                         f"文件大小超过限制（最大 {max_bytes} 字节）"
                     )
+                digest.update(chunk)
                 out.write(chunk)
         if size_bytes == 0:
             raise BadRequestError("文件内容为空")
@@ -103,6 +108,7 @@ async def persist_upload(
         storage_relpath=f"recordings/{recording_id}.{extension}",
         extension=extension,
         size_bytes=size_bytes,
+        file_sha256=digest.hexdigest(),
     )
 
 
