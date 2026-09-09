@@ -102,6 +102,10 @@ def build_processor(
             logger.warning("LLM 失败 task_id=%s code=%s", task_id, exc.code)
             await _fail(db_path, task, exc.code, exc.message)
             return
+        except Exception:
+            logger.exception("LLM 未预期异常 task_id=%s", task_id)
+            await _fail(db_path, task, "LLM_FAILED", "摘要处理发生异常，请重试")
+            return
 
         # 4) 落 done（与 summary_json 同一事务）
         if not await _done(db_path, task, result.to_json()):
