@@ -24,6 +24,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0.001")
     monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0.002")
     monkeypatch.setenv("AUDIOMUSE_ASR_FAILURE_THRESHOLD", "1.0")
+    monkeypatch.setenv("AUDIOMUSE_AUTO_RETRY_MAX_RETRIES", "3")
+    monkeypatch.setenv("AUDIOMUSE_AUTO_RETRY_BASE_DELAY_SECONDS", "0")
     get_settings.cache_clear()
     with TestClient(create_app()) as c:
         yield c

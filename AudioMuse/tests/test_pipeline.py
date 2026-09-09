@@ -129,6 +129,7 @@ async def test_pipeline_asr_failure_marks_failed_and_skips_llm(tmp_path):
     processor = build_processor(
         db_path=db_path, llm_client=llm,
         asr_params=dict(_FAST_ASR, failure_threshold=1.0, sleep=_fake_sleep),
+        retry_sleep=_fake_sleep,
     )
     await processor(task)
 
@@ -154,6 +155,7 @@ async def _run_with_llm_output(tmp_path, handler):
     processor = build_processor(
         db_path=db_path, llm_client=llm,
         asr_params=dict(_FAST_ASR, sleep=_fake_sleep),
+        retry_sleep=_fake_sleep,
     )
     await processor(task)
     return await _get_task(db_path, task["id"])
@@ -245,7 +247,8 @@ async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
     def handler(request):
         nonlocal calls
         calls += 1
-        if calls == 1:
+        failure_calls = 4 if failure == "invalid_output" else 1
+        if calls <= failure_calls:
             if failure == "unexpected":
                 raise RuntimeError("private SDK error")
             return httpx.Response(200, json={"choices": None})
@@ -263,6 +266,8 @@ async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
     monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0")
     monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0")
     monkeypatch.setenv("AUDIOMUSE_ASR_FAILURE_THRESHOLD", "0")
+    monkeypatch.setenv("AUDIOMUSE_AUTO_RETRY_MAX_RETRIES", "3")
+    monkeypatch.setenv("AUDIOMUSE_AUTO_RETRY_BASE_DELAY_SECONDS", "0")
     monkeypatch.setattr("app.main.build_llm_client", lambda settings: llm)
     get_settings.cache_clear()
     try:
@@ -309,7 +314,7 @@ async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
                 assert detail.status_code == 200
                 assert detail.json()["data"]["transcript"]
                 assert detail.json()["data"]["summary"] == expected
-                assert calls == 3
+                assert calls == (6 if failure == "invalid_output" else 3)
     finally:
         get_settings.cache_clear()
 
