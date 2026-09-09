@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # LLM 摘要请求超时（秒）
     llm_timeout_seconds: float = 30.0
 
+    # --- ASR Mock 参数（默认 5~15s、约 20% 失败；测试/演示可用环境变量调小） ---
+    asr_min_seconds: float = 5.0
+    asr_max_seconds: float = 15.0
+    asr_failure_threshold: float = 0.2
+
     @property
     def recordings_dir(self) -> Path:
         """录音文件存储目录。"""
