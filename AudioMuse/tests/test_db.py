@@ -3,7 +3,7 @@
 import pytest
 import aiosqlite
 
-from app.db.connection import db, run_migrations
+from app.db.connection import MIGRATIONS_DIR, db, run_migrations
 from app.db.constants import now_utc_ms
 
 _INSERT_RECORDING = (
@@ -42,6 +42,54 @@ async def test_empty_db_migrates(db_path):
 async def test_migrate_twice_is_idempotent(db_path):
     """重复启动（重复迁移）不抛错：记录已应用的迁移并跳过。"""
     await run_migrations(db_path)
+
+
+async def test_idempotency_migration_adds_columns_and_unique_index(db_path):
+    await run_migrations(db_path)
+    async with db(db_path) as conn:
+        cursor = await conn.execute("PRAGMA table_info(recordings)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        assert {"idempotency_key", "file_sha256"} <= columns
+
+        cursor = await conn.execute("PRAGMA index_list(recordings)")
+        indexes = {row["name"] for row in await cursor.fetchall()}
+        assert "idx_recordings_idempotency_key" in indexes
+
+
+async def test_idempotency_migration_upgrades_existing_database(db_path):
+    """已有 001 数据升级后保留原行，并将新增幂等字段置空。"""
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.executescript(
+            "CREATE TABLE schema_migrations ("
+            "name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);"
+            + (MIGRATIONS_DIR / "001_init.sql").read_text(encoding="utf-8")
+        )
+        now = now_utc_ms()
+        await conn.execute(
+            "INSERT INTO schema_migrations(name, applied_at) VALUES (?, ?)",
+            ("001_init.sql", now),
+        )
+        await conn.execute(
+            _INSERT_RECORDING,
+            ("legacy", "old.wav", "recordings/old.wav", "wav", 10, now, now),
+        )
+        await conn.commit()
+
+    await run_migrations(db_path)
+    async with db(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT id, idempotency_key, file_sha256 FROM recordings WHERE id='legacy'"
+        )
+        row = dict(await cursor.fetchone())
+        assert row == {
+            "id": "legacy", "idempotency_key": None, "file_sha256": None
+        }
+        cursor = await conn.execute(
+            "SELECT name FROM schema_migrations ORDER BY name"
+        )
+        assert [r["name"] for r in await cursor.fetchall()] == [
+            "001_init.sql", "002_upload_idempotency.sql"
+        ]
     await run_migrations(db_path)
 
 

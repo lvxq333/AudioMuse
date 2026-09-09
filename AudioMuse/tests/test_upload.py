@@ -1,6 +1,7 @@
 """P0-03 上传接口测试（独立临时 data 目录与数据库，不碰真实 data/）。"""
 
 import asyncio
+import hashlib
 import logging
 import uuid
 
@@ -93,7 +94,8 @@ def test_upload_persists_record_task_and_file(client, tmp_path):
 
     recordings = _fetch_rows(
         settings,
-        "SELECT id, original_filename, extension, size_bytes, storage_path, lifecycle"
+        "SELECT id, original_filename, extension, size_bytes, storage_path, lifecycle,"
+        " file_sha256"
         " FROM recordings WHERE id=?",
         (rid,),
     )
@@ -103,6 +105,7 @@ def test_upload_persists_record_task_and_file(client, tmp_path):
     assert row["extension"] == "wav"
     assert row["size_bytes"] == 3
     assert row["lifecycle"] == "active"
+    assert row["file_sha256"] == hashlib.sha256(b"abc").hexdigest()
 
     tasks = _fetch_rows(
         settings,
