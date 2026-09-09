@@ -17,8 +17,9 @@ fi
 
 PORT="${PORT:-8000}"
 HOST="${HOST:-0.0.0.0}"
-EXTRA=()
+# Keep the array nonempty for macOS Bash 3.2 with `set -u`.
+CMD=("$VENV/bin/uvicorn" app.main:app --host "$HOST" --port "$PORT")
 if [[ "${1:-}" == "--reload" ]]; then
-  EXTRA+=(--reload)
+  CMD+=(--reload)
 fi
-exec "$VENV/bin/uvicorn" app.main:app --host "$HOST" --port "$PORT" "${EXTRA[@]}"
+exec "${CMD[@]}"
