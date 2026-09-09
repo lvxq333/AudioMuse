@@ -4,6 +4,8 @@
 模拟真实行为）与「智能摘要」（真实 LLM，可 mock 兜底），客户端可查询任务状态
 与结果。
 
+GitHub 仓库：[https://github.com/lvxq333/AudioMuse](https://github.com/lvxq333/AudioMuse)
+
 **当前状态：P0 全部完成**（P0-01 骨架 → P0-08 删除录音），104 项测试通过，
 真实 LLM 链路已验证（DeepSeek）。已完成加分项：失败自动重试、上传幂等、并发控制、
 测试。尚未实施：SSE 流式输出、公开部署等加分项（见「未完成项」）。
