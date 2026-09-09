@@ -4,9 +4,9 @@
 模拟真实行为）与「智能摘要」（真实 LLM，可 mock 兜底），客户端可查询任务状态
 与结果。
 
-**当前状态：P0 全部完成**（P0-01 骨架 → P0-08 删除录音），57 项测试通过，
-真实 LLM 链路已验证（DeepSeek）。尚未实施：自动重试/指数退避、SSE 流式输出、
-上传幂等、公开部署等加分项（见「未完成项」）。
+**当前状态：P0 全部完成**（P0-01 骨架 → P0-08 删除录音），104 项测试通过，
+真实 LLM 链路已验证（DeepSeek）。已完成加分项：失败自动重试、上传幂等、并发控制、
+测试。尚未实施：SSE 流式输出、公开部署等加分项（见「未完成项」）。
 
 ---
 
@@ -62,7 +62,7 @@ curl -F "file=@docs/sample.wav" http://127.0.0.1:8000/v1/recordings
 测试：
 
 ```bash
-.venv/bin/python -m pytest -q     # 57 passed
+.venv/bin/python -m pytest -q     # 104 passed
 ```
 
 ## 架构图
@@ -75,8 +75,8 @@ flowchart LR
     DB -.pending 持久队列.-> W[消费者×3 asyncio]
     W -->|原子领取 claim| DB
     W --> P[processor 流水线]
-    P --> A[Mock ASR 5-15s/20%失败]
-    P --> L[LLM 摘要/超时/校验]
+    P --> A[Mock ASR 5-15s/20%失败/自动重试]
+    P --> L[LLM 摘要/超时/校验/自动重试]
     P -->|条件写回| DB
     R[Registry 任务注册表] -.单任务取消.-> P
     API -.DELETE/停止.-> R
@@ -97,11 +97,35 @@ pending → transcribing → summarizing → done
 failed --POST retry--> pending（attempt_no + 1，清理旧结果）
 ```
 
+### 失败自动重试
+
+- ASR 和 LLM 阶段分别最多自动重试 3 次；首次执行加 3 次重试，即每个阶段最多调用 4 次；
+- 采用 1、2、4 秒指数退避，退避使用异步等待；该任务继续占用其消费者名额；
+- ASR 只重试明确的 `AsrFailure`；LLM 重试 `LLM_TIMEOUT`、`LLM_FAILED` 和
+  `LLM_INVALID_OUTPUT`，未预期的代码异常直接失败；
+- LLM 重试不会重新执行成功的 ASR，已经保存的 transcript 会保留；
+- 自动重试使用进程内局部计数，不写数据库，也不增加 `attempt_no`；手动 retry 才开启
+  新的业务处理轮次并令 `attempt_no + 1`；
+- 删除或关闭触发的 `CancelledError` 会立即中断退避，不继续重试；只有自动重试耗尽后
+  才把任务写为 `failed`。
+
+### 上传幂等
+
+上传接口支持可选请求头 `Idempotency-Key`（去除首尾空白后长度为 1～128）：
+
+- 不传请求头时保持原行为，每次上传都创建新录音和任务；
+- 首次使用某个键上传成功返回 `202`；相同键和相同文件内容再次上传返回 `200`，复用
+  原 `recording_id`、`task_id` 及其当前状态；
+- 相同键用于不同文件内容返回 `409`；键对应的录音正在删除时也返回 `409`；
+- 文件在流式落盘时同步计算 SHA-256。数据库唯一索引裁决并发请求，未创建记录的一方
+  清理自己落盘的文件，因此并发重放也只产生一条录音和一个任务；
+- 删除录音后其幂等键随记录一起释放，后续可以重新使用。
+
 ## API 一览与响应契约
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/v1/recordings` | 上传录音（multipart `file`，≤50MiB，wav/mp3/m4a/aac）→ 202 |
+| POST | `/v1/recordings` | 上传录音（multipart `file`；可选 `Idempotency-Key`）→ 首次 202/重放 200 |
 | GET | `/v1/tasks/{task_id}` | 任务状态（transcribing/summarizing 体现阶段） |
 | GET | `/v1/recordings` | 录音列表（分页倒序，含最新任务状态） |
 | GET | `/v1/recordings/{id}` | 录音详情（done 含 transcript + summary） |
@@ -133,6 +157,8 @@ failed --POST retry--> pending（attempt_no + 1，清理旧结果）
 | extension | CHECK wav/mp3/m4a/aac | 小写白名单 |
 | size_bytes | CHECK > 0 | 实际字节数 |
 | lifecycle | CHECK active/deleting | 删除协调状态（列表只显示 active） |
+| idempotency_key | UNIQUE，可空 | 客户端上传幂等键；不传时不参与去重 |
+| file_sha256 | 可空，长度 64 | 新上传文件的内容指纹，用于判断同键请求是否为同一文件 |
 | created_at/updated_at | INTEGER | epoch 毫秒 |
 
 ### tasks（处理任务，一对一）
@@ -160,6 +186,8 @@ failed --POST retry--> pending（attempt_no + 1，清理旧结果）
 | 领取原子性 | `BEGIN IMMEDIATE` + 条件 UPDATE | SQLite 写事务串行化，同任务不可能被双领 |
 | 进程互斥 | `fcntl` 文件锁（锁文件常驻不删） | 防止第二个进程同目录再起消费者；崩溃自动释放 |
 | 写回安全 | attempt_no + 期望状态条件 UPDATE | 旧轮次/已删除任务的结果无法覆盖新状态 |
+| 自动重试 | 阶段内局部计数 + asyncio 指数退避 | 最多重试 3 次；不改表、不改变业务轮次，ASR/LLM 独立重试 |
+| 上传幂等 | 可选 Idempotency-Key + SHA-256 + 唯一索引 | 同键同文件复用任务，同键不同文件冲突，并发输家清理文件 |
 | LLM | OpenAI 兼容 chat/completions + 本地 mock 兜底 | DeepSeek/智谱/Groq 等通用；无 Key 自动 mock（README 说明，题目允许但降分） |
 | 事务 | 显式 BEGIN IMMEDIATE/COMMIT/ROLLBACK | aiosqlite 的 `async with conn` 并非事务（见「踩坑」） |
 
@@ -196,7 +224,7 @@ AUDIOMUSE_LLM_TIMEOUT_SECONDS=30
    最小治理；启动扫描/定时回收为 TODO。
 4. **无鉴权/无用户隔离**：题目明确不考察；若公网开放需自行补 API Key 与限流。
 5. **Windows**：文件锁用 fcntl，仅类 Unix（macOS/Linux）。
-6. 未做加分项：失败自动重试（指数退避）、SSE 流式摘要、上传幂等、公开部署、
+6. 未做加分项：SSE 流式摘要、公开部署、
    运行中断点续跑（均预留模块边界，见 docs/TODO.md）。
 
 ## 开发踩坑记录（答辩备查）
@@ -221,4 +249,6 @@ AUDIOMUSE_LLM_TIMEOUT_SECONDS=30
 | AUDIOMUSE_MAX_UPLOAD_BYTES | 52428800 | 上传大小上限（50 MiB） |
 | AUDIOMUSE_LLM_API_KEY / _BASE_URL / _MODEL / _TIMEOUT_SECONDS | 空 / OpenAI / 空 / 30 | LLM 配置 |
 | AUDIOMUSE_ASR_MIN/MAX_SECONDS、_FAILURE_THRESHOLD | 5 / 15 / 0.2 | Mock ASR 参数 |
+| AUDIOMUSE_AUTO_RETRY_MAX_RETRIES | 3 | ASR/LLM 每阶段自动重试上限（允许 0～3） |
+| AUDIOMUSE_AUTO_RETRY_BASE_DELAY_SECONDS | 1 | 指数退避基础秒数；默认形成 1/2/4 秒等待 |
 | AUDIOMUSE_LOG_LEVEL | INFO | 日志级别 |
