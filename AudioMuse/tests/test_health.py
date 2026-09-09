@@ -24,8 +24,8 @@ def test_x_request_id_is_echoed() -> None:
 
 
 def test_unknown_v1_route_returns_error_shape() -> None:
-    """未实现路由返回统一错误结构（404），且带同一请求编号。"""
-    resp = client.get("/v1/recordings/not-exist")
+    """真正未实现的路由返回统一错误结构（404），且带同一请求编号。"""
+    resp = client.get("/v1/not-a-route")
     assert resp.status_code == 404
     body = resp.json()
     assert "error" in body
