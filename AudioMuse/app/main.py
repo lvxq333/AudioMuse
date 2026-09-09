@@ -71,6 +71,8 @@ def create_app() -> FastAPI:
                     "max_seconds": settings.asr_max_seconds,
                     "failure_threshold": settings.asr_failure_threshold,
                 },
+                retry_max_retries=settings.auto_retry_max_retries,
+                retry_base_delay=settings.auto_retry_base_delay_seconds,
             )
             stop = asyncio.Event()
             app.state.registry = registry   # 供未来 stop/删除接口访问

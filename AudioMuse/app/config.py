@@ -7,6 +7,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录：app/config.py -> 项目根
@@ -45,6 +46,10 @@ class Settings(BaseSettings):
     asr_min_seconds: float = 5.0
     asr_max_seconds: float = 15.0
     asr_failure_threshold: float = 0.2
+
+    # 阶段内自动重试：首次执行失败后最多再试 3 次，退避 1/2/4 秒
+    auto_retry_max_retries: int = Field(default=3, ge=0, le=3)
+    auto_retry_base_delay_seconds: float = Field(default=1.0, ge=0)
 
     @property
     def recordings_dir(self) -> Path:
