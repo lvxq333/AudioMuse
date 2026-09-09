@@ -32,7 +32,7 @@ _CLAIM_SELECT = """
            r.original_filename, r.storage_path, r.extension
       FROM tasks t
       JOIN recordings r ON r.id = t.recording_id
-     WHERE t.status = ?
+     WHERE t.status = ? AND r.lifecycle = ?
      ORDER BY t.created_at ASC, t.id ASC
      LIMIT 1
 """
@@ -104,7 +104,10 @@ async def claim_next_task(
     now = now or now_utc_ms()
     await conn.execute("BEGIN IMMEDIATE")
     try:
-        cursor = await conn.execute(_CLAIM_SELECT, (TaskStatus.PENDING.value,))
+        cursor = await conn.execute(
+            _CLAIM_SELECT,
+            (TaskStatus.PENDING.value, Lifecycle.ACTIVE.value),
+        )
         row = await cursor.fetchone()
         if row is None:
             await conn.rollback()
@@ -298,7 +301,7 @@ _COUNT_SQL = """
 
 _DETAIL_SQL = """
     SELECT r.id AS recording_id, r.original_filename, r.extension,
-           r.size_bytes, r.created_at,
+           r.size_bytes, r.storage_path, r.created_at,
            t.id AS task_id, t.status, t.attempt_no,
            t.transcript, t.summary_json,
            t.error_code, t.error_message,
@@ -376,6 +379,57 @@ async def retry_reset_task(
                 TaskStatus.PENDING.value, now,
                 task_id, TaskStatus.FAILED.value,
             ),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
+    except Exception:
+        await conn.rollback()
+        raise
+
+
+# ============ 删除（P0-08） ============
+
+async def mark_recording_deleting(
+    conn: aiosqlite.Connection,
+    *,
+    recording_id: str,
+    now: Optional[int] = None,
+) -> bool:
+    """原子地把 active 录音置为 deleting。
+
+    防止并发双删与删除期间后台写回/新领取（claim 已按 lifecycle 过滤）。
+    """
+    now = now or now_utc_ms()
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "UPDATE recordings SET lifecycle=?, updated_at=?"
+            " WHERE id=? AND lifecycle=?",
+            (Lifecycle.DELETING.value, now, recording_id, Lifecycle.ACTIVE.value),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
+    except Exception:
+        await conn.rollback()
+        raise
+
+
+async def delete_recording_row(
+    conn: aiosqlite.Connection,
+    *,
+    recording_id: str,
+) -> bool:
+    """删除录音行（tasks 经外键 ON DELETE CASCADE 一并删除）。
+
+    仅允许删除处于 deleting 的录音（防止误删仍在活跃服务的行）。
+    """
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM recordings WHERE id=? AND lifecycle=?",
+            (recording_id, Lifecycle.DELETING.value),
         )
         ok = cursor.rowcount == 1
         await conn.commit()
