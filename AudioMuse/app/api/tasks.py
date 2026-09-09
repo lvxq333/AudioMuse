@@ -78,7 +78,7 @@ async def retry_task(request: Request, task_id: str):
     """失败任务重试：failed → pending（attempt_no + 1），由消费者重新处理。
 
     - 404：任务不存在；
-    - 409：状态不允许重试，或并发重试已被其他请求抢先（重复请求保护）；
+    - 409：状态不允许重试、录音正在删除，或并发重试已被其他请求抢先；
     - 202：重试已受理，返回 task_id / status=pending / attempt_no（已 +1）。
     """
     settings = get_settings()
@@ -94,8 +94,8 @@ async def retry_task(request: Request, task_id: str):
             )
         resetted = await retry_reset_task(conn, task_id=task_id)
     if not resetted:
-        # 条件 UPDATE 影响 0 行 = 状态已被并发请求抢先改变（重复请求）
-        raise ConflictError("任务已被其他请求重试，请勿重复提交")
+        # 条件更新同时检查任务状态与录音生命周期，避免删除中的任务重新排队。
+        raise ConflictError("任务状态已变化或录音正在删除，无法重试")
 
     return ok(
         data={

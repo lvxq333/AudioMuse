@@ -359,7 +359,7 @@ async def retry_reset_task(
 ) -> bool:
     """失败任务重试：原子地把 failed 任务重置为 pending（attempt_no + 1）。
 
-    - 仅当当前状态为 failed 时生效（条件 UPDATE，防并发重复重试：
+    - 仅当当前状态为 failed 且关联录音为 active 时生效（条件 UPDATE，防并发重复重试：
       同一时刻只有一个请求能把 failed → pending，其余影响 0 行）；
     - 清理上一轮的 error_code/error_message、transcript、summary_json、
       started_at/finished_at，让新一轮从干净状态开始；
@@ -374,10 +374,12 @@ async def retry_reset_task(
             "     error_code=NULL, error_message=NULL,"
             "     transcript=NULL, summary_json=NULL,"
             "     started_at=NULL, finished_at=NULL, updated_at=?"
-            " WHERE id=? AND status=?",
+            " WHERE id=? AND status=?"
+            " AND EXISTS (SELECT 1 FROM recordings r"
+            " WHERE r.id=tasks.recording_id AND r.lifecycle=?)",
             (
                 TaskStatus.PENDING.value, now,
-                task_id, TaskStatus.FAILED.value,
+                task_id, TaskStatus.FAILED.value, Lifecycle.ACTIVE.value,
             ),
         )
         ok = cursor.rowcount == 1
