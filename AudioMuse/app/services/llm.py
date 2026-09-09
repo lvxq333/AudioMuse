@@ -110,6 +110,8 @@ def _validate_structure(data: dict) -> LlmResult:
 
 def parse_and_validate(content: str) -> LlmResult:
     """解析并校验 LLM 回复；不合格抛 LlmInvalidOutput。"""
+    if not isinstance(content, str) or not content.strip():
+        raise LlmInvalidOutput("LLM content 必须是非空字符串")
     try:
         data = _extract_json_object(content)
     except (TypeError, ValueError) as exc:
@@ -164,7 +166,6 @@ class LlmClient:
             ) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
         except httpx.TimeoutException as exc:
             logger.warning("LLM 超时 task_id=%s", task_id)
             raise LlmTimeout("LLM 调用超时") from exc
@@ -174,9 +175,25 @@ class LlmClient:
                 task_id, exc.response.status_code,
             )
             raise LlmError(f"LLM HTTP 错误: {exc.response.status_code}") from exc
-        except (httpx.HTTPError, KeyError, IndexError) as exc:
+        except httpx.HTTPError as exc:
             raise LlmError("LLM 响应异常") from exc
 
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise LlmInvalidOutput("LLM 响应体不是合法 JSON") from exc
+        if not isinstance(data, dict):
+            raise LlmInvalidOutput("LLM 响应体必须是 JSON 对象")
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LlmInvalidOutput("LLM choices 必须是非空数组")
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise LlmInvalidOutput("LLM choices 首项必须是对象")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise LlmInvalidOutput("LLM message 必须是对象")
+        content = message.get("content")
         result = parse_and_validate(content)
         logger.info("LLM 调用完成 task_id=%s", task_id)
         return result
