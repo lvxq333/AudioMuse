@@ -268,3 +268,79 @@ async def fail_task(
     except Exception:
         await conn.rollback()
         raise
+
+
+# ============ 查询（P0-06） ============
+
+_QUERY_TASK = """
+    SELECT id, recording_id, status, attempt_no,
+           error_code, error_message,
+           created_at, updated_at, started_at, finished_at
+      FROM tasks
+     WHERE id = ?
+"""
+
+_LIST_SQL = """
+    SELECT r.id AS recording_id, r.original_filename, r.size_bytes,
+           r.extension, r.created_at,
+           t.id AS task_id, t.status AS task_status,
+           t.attempt_no, t.error_code
+      FROM recordings r
+      JOIN tasks t ON t.recording_id = r.id
+     WHERE r.lifecycle = ?
+     ORDER BY r.created_at DESC, r.id DESC
+     LIMIT ? OFFSET ?
+"""
+
+_COUNT_SQL = """
+    SELECT COUNT(*) AS n FROM recordings WHERE lifecycle = ?
+"""
+
+_DETAIL_SQL = """
+    SELECT r.id AS recording_id, r.original_filename, r.extension,
+           r.size_bytes, r.created_at,
+           t.id AS task_id, t.status, t.attempt_no,
+           t.transcript, t.summary_json,
+           t.error_code, t.error_message,
+           t.created_at AS task_created_at, t.updated_at AS task_updated_at,
+           t.started_at, t.finished_at
+      FROM recordings r
+      JOIN tasks t ON t.recording_id = r.id
+     WHERE r.id = ?
+"""
+
+
+async def get_task_by_id(
+    conn: aiosqlite.Connection, task_id: str
+) -> Optional[dict]:
+    """按 task_id 查询任务；不存在返回 None。"""
+    cursor = await conn.execute(_QUERY_TASK, (task_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def list_recordings(
+    conn: aiosqlite.Connection,
+    *,
+    page: int,
+    page_size: int,
+) -> dict:
+    """分页倒序列出 active 录音（含最新任务状态），返回 {items, total}。"""
+    lifecycle = Lifecycle.ACTIVE.value
+    cursor = await conn.execute(_COUNT_SQL, (lifecycle,))
+    row = await cursor.fetchone()
+    total = int(row["n"])
+
+    offset = (page - 1) * page_size
+    cursor = await conn.execute(_LIST_SQL, (lifecycle, page_size, offset))
+    items = [dict(r) for r in await cursor.fetchall()]
+    return {"items": items, "total": total}
+
+
+async def get_recording_with_task(
+    conn: aiosqlite.Connection, recording_id: str
+) -> Optional[dict]:
+    """查询录音及其任务（含 transcript/summary_json）；不存在返回 None。"""
+    cursor = await conn.execute(_DETAIL_SQL, (recording_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
