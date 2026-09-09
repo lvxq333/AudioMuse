@@ -1,6 +1,7 @@
 """P0-03 上传接口测试（独立临时 data 目录与数据库，不碰真实 data/）。"""
 
 import asyncio
+import logging
 import uuid
 
 import pytest
@@ -149,3 +150,55 @@ def test_upload_db_failure_returns_clear_error_and_no_orphan(
         [p.name for p in recordings_dir.iterdir()] if recordings_dir.exists() else []
     )
     assert leftovers == []  # 正式文件与临时文件均已被清理
+
+
+@pytest.mark.parametrize("request_id", [None, "upload-disk-error-test"])
+def test_upload_disk_error_returns_json_and_cleans_up(
+    client, monkeypatch, caplog, request_id
+):
+    import app.services.storage as storage
+
+    failure = OSError("private disk path /private/audio/upload.tmp")
+
+    def fail_replace(source, target):
+        assert source.exists()  # 确保测试经过真实临时文件写入路径
+        raise failure
+
+    monkeypatch.setattr(storage.os, "replace", fail_replace)
+    caplog.set_level(logging.ERROR, logger="app.core.errors")
+    # 不启动额外 lifespan：client fixture 已为本用例迁移了独立临时数据库。
+    http_client = TestClient(client.app, raise_server_exceptions=False)
+    try:
+        response = http_client.post(
+            "/v1/recordings",
+            files={"file": ("a.wav", b"audio")},
+            headers={"X-Request-ID": request_id} if request_id else {},
+        )
+    finally:
+        http_client.close()
+
+    assert response.status_code == 500
+    assert response.headers["content-type"] == "application/json"
+    rid = response.headers["X-Request-ID"]
+    if request_id:
+        assert rid == request_id
+    else:
+        assert uuid.UUID(rid)
+    assert response.json() == {"error": {
+        "code": "INTERNAL_ERROR",
+        "message": "内部错误，请稍后重试",
+        "request_id": rid,
+    }}
+    assert str(failure) not in response.text
+    assert any(
+        record.name == "app.core.errors"
+        and rid in record.getMessage()
+        and record.exc_info is not None
+        and record.exc_info[1] is failure
+        and record.exc_info[2] is not None
+        for record in caplog.records
+    )
+    settings = get_settings()
+    assert _fetch_rows(settings, "SELECT id FROM recordings") == []
+    assert _fetch_rows(settings, "SELECT id FROM tasks") == []
+    assert list(settings.recordings_dir.iterdir()) == []
