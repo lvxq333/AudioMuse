@@ -5,6 +5,7 @@ ASR 走毫秒级 + 注入假 sleep；不依赖真实网络与随机源。
 """
 
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -177,6 +178,140 @@ async def test_pipeline_llm_timeout(tmp_path):
     row = await _run_with_llm_output(tmp_path, handler)
     assert row["status"] == TaskStatus.FAILED.value
     assert row["error_code"] == "LLM_TIMEOUT"
+
+
+@pytest.mark.parametrize("body", [
+    "<html>upstream error</html>",
+    "null", "[]",
+    "{}",
+    '{"choices": null}',
+    '{"choices": []}',
+    '{"choices": {}}',
+    '{"choices": [null]}',
+    '{"choices": [{}]}',
+    '{"choices": [{"message": null}]}',
+    '{"choices": [{"message": []}]}',
+    '{"choices": [{"message": {}}]}',
+] + [
+    json.dumps({"choices": [{"message": {"content": value}}]})
+    for value in (None, 123, [], {}, "", "   ")
+])
+async def test_pipeline_malformed_llm_response_finishes_failed(tmp_path, body):
+    row = await _run_with_llm_output(
+        tmp_path, lambda request: httpx.Response(200, text=body)
+    )
+    assert row["status"] == "failed"
+    assert row["error_code"] == "LLM_INVALID_OUTPUT"
+    assert row["transcript"]
+    assert row["summary_json"] is None
+
+
+@pytest.mark.parametrize("failure", ["http", "network", "unexpected"])
+async def test_pipeline_llm_failures_keep_error_classification(tmp_path, failure):
+    def handler(request):
+        if failure == "http":
+            return httpx.Response(503, text="upstream unavailable")
+        if failure == "network":
+            raise httpx.ConnectError("connection failed")
+        raise RuntimeError("unexpected SDK error")
+
+    row = await _run_with_llm_output(tmp_path, handler)
+    assert row["status"] == "failed"
+    assert row["error_code"] == "LLM_FAILED"
+
+
+async def test_pipeline_llm_cancellation_propagates(tmp_path):
+    def handler(request):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_with_llm_output(tmp_path, handler)
+    row = await _get_task(tmp_path / "p.db", "t1")
+    # 取消交由消费者处理，不能被 LLM 的普通异常兜底改成失败。
+    assert row["status"] == "summarizing"
+    assert row["error_code"] is None
+
+
+@pytest.mark.parametrize("failure", ["invalid_output", "unexpected"])
+async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
+    tmp_path, monkeypatch, failure
+):
+    from app.config import get_settings
+    from app.main import create_app
+
+    calls = 0
+    expected = {"summary": "已完成", "key_points": ["要点"], "todos": []}
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            if failure == "unexpected":
+                raise RuntimeError("private SDK error")
+            return httpx.Response(200, json={"choices": None})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(expected)}}]
+        })
+
+    llm = LlmClient(
+        api_key="test", base_url="https://llm.test/v1", model="m",
+        timeout_seconds=1, transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setenv("AUDIOMUSE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIOMUSE_LLM_API_KEY", "")
+    monkeypatch.setenv("AUDIOMUSE_MAX_CONCURRENCY", "1")
+    monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0")
+    monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0")
+    monkeypatch.setenv("AUDIOMUSE_ASR_FAILURE_THRESHOLD", "0")
+    monkeypatch.setattr("app.main.build_llm_client", lambda settings: llm)
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                async def upload():
+                    response = await client.post(
+                        "/v1/recordings", files={"file": ("a.wav", b"audio")}
+                    )
+                    assert response.status_code == 202
+                    return response.json()["data"]
+
+                async def wait_status(task_id, status):
+                    async def poll():
+                        while True:
+                            response = await client.get(f"/v1/tasks/{task_id}")
+                            assert response.status_code == 200
+                            row = response.json()["data"]
+                            if row["status"] == status:
+                                return row
+                            await asyncio.sleep(0.01)
+                    return await asyncio.wait_for(poll(), timeout=3)
+
+                first = await upload()
+                failed = await wait_status(first["task_id"], "failed")
+                assert failed["error_code"] == (
+                    "LLM_INVALID_OUTPUT" if failure == "invalid_output"
+                    else "LLM_FAILED"
+                )
+                assert "private SDK error" not in failed["error_message"]
+                # 仅一个消费者：后一段能完成，证明前一段失败没有杀死它。
+                second = await upload()
+                await wait_status(second["task_id"], "done")
+
+                retry = await client.post(f"/v1/tasks/{first['task_id']}/retry")
+                assert retry.status_code == 202
+                assert retry.json()["data"]["attempt_no"] == 2
+                done = await wait_status(first["task_id"], "done")
+                assert done["error_code"] is None
+                detail = await client.get(f"/v1/recordings/{first['recording_id']}")
+                assert detail.status_code == 200
+                assert detail.json()["data"]["transcript"]
+                assert detail.json()["data"]["summary"] == expected
+                assert calls == 3
+    finally:
+        get_settings.cache_clear()
 
 
 # ---------- 5. 单任务取消：消费者继续 ----------
