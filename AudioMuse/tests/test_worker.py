@@ -16,6 +16,7 @@ from app.db.repository import (
     create_recording_and_task,
     mark_interrupted_tasks,
 )
+from app.services.registry import TaskRegistry
 from app.worker.consumer import consume_loop, run_consumers
 from app.worker.lock import DataDirLock
 
@@ -120,8 +121,8 @@ async def test_three_consumers_process_all_with_peak_at_most_3(tmp_path):
     stop = asyncio.Event()
     runner = asyncio.create_task(
         run_consumers(
-            3, db_path=db_path, processor=processor, stop=stop,
-            poll_interval=0.01,
+            3, db_path=db_path, processor=processor, registry=TaskRegistry(),
+            stop=stop, poll_interval=0.01,
         )
     )
     try:
@@ -231,7 +232,7 @@ async def test_consumer_exits_promptly_on_stop(tmp_path):
     async def _run():
         await consume_loop(
             db_path=db_path, processor=noop_processor,
-            stop=stop, poll_interval=0.01,
+            registry=TaskRegistry(), stop=stop, poll_interval=0.01,
         )
 
     t = asyncio.create_task(_run())
