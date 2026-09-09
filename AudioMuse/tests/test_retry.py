@@ -136,6 +136,78 @@ def test_concurrent_retries_only_one_succeeds(client):
     assert codes.count(409) == 19
 
 
+# ---------- 删除中的录音不可重试 ----------
+
+def test_retry_rejects_failed_delete_then_delete_can_finish(client, monkeypatch):
+    """删除失败不能重新排队；保留全部任务字段，仍可再次删除完成清理。"""
+    import app.api.recordings as recordings_api
+
+    tid = _make_failed(client)
+    settings = get_settings()
+
+    async def snapshot():
+        async with db_ctx(settings.database_path) as conn:
+            cur = await conn.execute("SELECT * FROM tasks WHERE id=?", (tid,))
+            task = dict(await cur.fetchone())
+            cur = await conn.execute(
+                "SELECT * FROM recordings WHERE id=?", (task["recording_id"],)
+            )
+            return task, dict(await cur.fetchone())
+
+    before, recording = asyncio.run(snapshot())
+    rid = recording["id"]
+    file_path = settings.data_dir / recording["storage_path"]
+    assert file_path.exists()
+    real_remove = recordings_api.remove_file_with_retry
+
+    async def cannot_remove(path, **kwargs):
+        return False
+
+    monkeypatch.setattr(recordings_api, "remove_file_with_retry", cannot_remove)
+    deletion = client.delete(f"/v1/recordings/{rid}")
+    assert deletion.status_code == 500
+    assert deletion.json()["error"]["code"] == "RECORDING_DELETE_FAILED"
+    assert asyncio.run(snapshot())[1]["lifecycle"] == "deleting"
+
+    retry = client.post(f"/v1/tasks/{tid}/retry")
+    assert retry.status_code == 409
+    assert retry.json()["error"]["code"] == "CONFLICT"
+    assert "删除" in retry.json()["error"]["message"]
+    after, recording = asyncio.run(snapshot())
+    assert after == before  # 轮次、错误、结果和时间戳均不应被清理或更新
+    assert recording["lifecycle"] == "deleting"
+    assert file_path.exists()
+
+    monkeypatch.setattr(recordings_api, "remove_file_with_retry", real_remove)
+    assert client.delete(f"/v1/recordings/{rid}").status_code == 204
+    assert not file_path.exists()
+    assert client.get(f"/v1/recordings/{rid}").status_code == 404
+    assert client.get(f"/v1/tasks/{tid}").status_code == 404
+
+
+def test_retry_rechecks_lifecycle_after_api_lookup(client, monkeypatch):
+    """在接口读取 failed 后才开始删除，数据库条件更新仍须拒绝重试。"""
+    import app.api.tasks as tasks_api
+    from app.db.repository import mark_recording_deleting
+
+    tid = _make_failed(client)
+    original_lookup = tasks_api.get_task_by_id
+
+    async def lookup_then_delete(conn, task_id):
+        row = await original_lookup(conn, task_id)
+        await mark_recording_deleting(conn, recording_id=row["recording_id"])
+        return row
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tasks_api, "get_task_by_id", lookup_then_delete)
+        response = client.post(f"/v1/tasks/{tid}/retry")
+    assert response.status_code == 409
+    task = client.get(f"/v1/tasks/{tid}").json()["data"]
+    assert task["status"] == "failed"
+    assert task["attempt_no"] == 1
+    assert task["error_code"] == "ASR_FAILED"
+
+
 # ---------- 旧轮次写回失效 ----------
 
 def test_old_attempt_writeback_is_rejected(client):
