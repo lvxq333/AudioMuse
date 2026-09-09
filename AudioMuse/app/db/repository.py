@@ -344,3 +344,42 @@ async def get_recording_with_task(
     cursor = await conn.execute(_DETAIL_SQL, (recording_id,))
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+# ============ 重试（P0-07） ============
+
+async def retry_reset_task(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: str,
+    now: Optional[int] = None,
+) -> bool:
+    """失败任务重试：原子地把 failed 任务重置为 pending（attempt_no + 1）。
+
+    - 仅当当前状态为 failed 时生效（条件 UPDATE，防并发重复重试：
+      同一时刻只有一个请求能把 failed → pending，其余影响 0 行）；
+    - 清理上一轮的 error_code/error_message、transcript、summary_json、
+      started_at/finished_at，让新一轮从干净状态开始；
+    - 返回是否生效（行数 == 1）。
+    """
+    now = now or now_utc_ms()
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "UPDATE tasks"
+            " SET status=?, attempt_no=attempt_no + 1,"
+            "     error_code=NULL, error_message=NULL,"
+            "     transcript=NULL, summary_json=NULL,"
+            "     started_at=NULL, finished_at=NULL, updated_at=?"
+            " WHERE id=? AND status=?",
+            (
+                TaskStatus.PENDING.value, now,
+                task_id, TaskStatus.FAILED.value,
+            ),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
+    except Exception:
+        await conn.rollback()
+        raise
