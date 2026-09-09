@@ -1,9 +1,4 @@
-"""录音与任务的数据访问：短事务。
-
-repository 为录音/任务数据的读写落点（数据访问层）；
-P0-03 提供上传创建；P0-04 追加原子领取与启动清理；
-后续阶段在此补充状态流转写回、删除等操作。
-"""
+"""封装录音和处理任务的数据库读写及状态条件更新。"""
 
 from __future__ import annotations
 
@@ -114,7 +109,7 @@ async def claim_next_task(
     写事务串行化，领取期间其他消费者的写锁请求会等待；本事务提交后
     它们再 SELECT 时该任务已是 transcribing，因此不会被重复领取。
 
-    处理阶段（P0-05 的转写/摘要）不持有任何数据库事务/锁，
+    转写和摘要执行期间不持有任何数据库事务或锁，
     因此多个消费者可并行处理各自领取的不同录音。
 
     无 pending 任务时返回 None；返回的 dict 含任务与录音的定位字段。
@@ -291,7 +286,7 @@ async def fail_task(
         raise
 
 
-# ============ 查询（P0-06） ============
+# 查询
 
 _QUERY_TASK = """
     SELECT id, recording_id, status, attempt_no,
@@ -367,7 +362,7 @@ async def get_recording_with_task(
     return dict(row) if row else None
 
 
-# ============ 重试（P0-07） ============
+# 手动重试
 
 async def retry_reset_task(
     conn: aiosqlite.Connection,
@@ -408,7 +403,7 @@ async def retry_reset_task(
         raise
 
 
-# ============ 删除（P0-08） ============
+# 录音删除
 
 async def mark_recording_deleting(
     conn: aiosqlite.Connection,

@@ -1,4 +1,4 @@
-"""P0-03 上传接口测试（独立临时 data 目录与数据库，不碰真实 data/）。"""
+"""验证上传校验、文件落盘、任务创建及异常清理。"""
 
 import asyncio
 import hashlib

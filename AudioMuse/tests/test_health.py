@@ -1,4 +1,4 @@
-"""骨架健康检查冒烟测试。业务用例随各 P0 阶段补充。"""
+"""验证应用健康检查接口及统一响应结构。"""
 
 from fastapi.testclient import TestClient
 

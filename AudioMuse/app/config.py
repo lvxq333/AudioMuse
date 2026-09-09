@@ -32,17 +32,17 @@ class Settings(BaseSettings):
     # 上传限制：单文件最大字节数（默认 50 MiB = 50 * 1024 * 1024）
     max_upload_bytes: int = 50 * 1024 * 1024
 
-    # 异步流水线：全局最多同时处理的任务数（P0 起生效）
+    # 全局最多同时处理的任务数。
     max_concurrency: int = 3
 
-    # --- LLM（真实摘要阶段使用，P0 起实现；密钥只从环境读取，不写日志） ---
+    # LLM 配置；密钥只从环境读取，不写日志。
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
     # LLM 摘要请求超时（秒）
     llm_timeout_seconds: float = 30.0
 
-    # --- ASR Mock 参数（默认 5~15s、约 20% 失败；测试/演示可用环境变量调小） ---
+    # Mock ASR 参数；测试和演示可通过环境变量缩短耗时或调整失败率。
     asr_min_seconds: float = 5.0
     asr_max_seconds: float = 15.0
     asr_failure_threshold: float = 0.2

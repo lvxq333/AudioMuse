@@ -1,4 +1,4 @@
--- 001_init.sql：P0-02 初始表结构
+-- 001_init.sql：录音与处理任务的初始表结构
 -- 约定：所有 DDL 幂等（IF NOT EXISTS），重复执行无副作用；
 --       时间字段统一存 epoch 毫秒（Unix 毫秒时间戳 INTEGER，应用层 now_utc_ms() 生成）
 

@@ -22,7 +22,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-# ---------- 结构化结果与异常 ----------
+# 结构化结果与异常
 
 @dataclass
 class LlmResult:
@@ -59,7 +59,7 @@ class LlmInvalidOutput(LlmError):
     code = "LLM_INVALID_OUTPUT"
 
 
-# ---------- 结构校验（第一层） ----------
+# 业务结构校验
 
 _SYSTEM_PROMPT = (
     "你是会议纪要助手。请根据用户提供的录音转写文本，输出严格的 JSON 对象，"
@@ -119,7 +119,7 @@ def parse_and_validate(content: str) -> LlmResult:
     return _validate_structure(data)
 
 
-# ---------- 客户端 ----------
+# LLM 客户端
 
 class LlmClient:
     """对 OpenAI 兼容 /chat/completions 的轻量客户端；无 Key 时降级 mock。"""

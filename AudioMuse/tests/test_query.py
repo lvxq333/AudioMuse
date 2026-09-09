@@ -1,4 +1,4 @@
-"""P0-06 查询接口测试（独立临时 data 目录与数据库）。"""
+"""验证任务状态、录音列表和录音详情查询接口。"""
 
 import time
 import uuid
@@ -39,7 +39,7 @@ def _wait_status(client, task_id, status, tries=100):
     raise AssertionError(f"task {task_id} 未达到状态 {status}")
 
 
-# ---------- GET /v1/tasks/{task_id} ----------
+# 任务状态查询
 
 def test_task_query_reaches_done_with_stage(client):
     r = _upload(client)
@@ -61,7 +61,7 @@ def test_task_query_bad_id_400(client):
     assert resp.status_code == 400
 
 
-# ---------- GET /v1/recordings（列表） ----------
+# 录音列表查询
 
 def test_list_pagination_and_desc_order(client):
     ids = [
@@ -89,7 +89,7 @@ def test_list_bad_pagination_422(client):
     assert resp.status_code == 422
 
 
-# ---------- GET /v1/recordings/{id}（详情） ----------
+# 录音详情查询
 
 def test_detail_includes_transcript_and_summary_when_done(client):
     r = _upload(client, filename="meeting.wav", content=b"hello world")

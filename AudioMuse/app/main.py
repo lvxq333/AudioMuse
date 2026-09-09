@@ -44,23 +44,24 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        """服务启动：迁移 → 独占锁 → 遗留清理 → 启动消费者；关闭时优雅停止。
+        """管理数据库迁移、进程锁、遗留任务清理和消费者生命周期。
 
         迁移失败、或数据目录已被其他进程占用（DataDirLockError）都会让
         服务启动失败（快速失败，避免带空库/多实例运行）。
         """
+        # 流程 1：执行数据库迁移，保证运行所需表结构可用。
         await run_migrations(settings.database_path)
 
-        # 单进程独占锁：同一数据目录只允许一个服务进程
+        # 流程 2：获取数据目录独占锁，防止同一目录启动多个消费者进程。
         lock = DataDirLock(settings.data_dir)
-        lock.acquire()  # 拿不到立即抛 DataDirLockError → 启动失败
+        lock.acquire()  # 获取失败时立即终止启动，避免多个进程共用同一 SQLite 文件。
 
         try:
-            # 启动清理：上次进程中断的 transcribing/summarizing → failed
+            # 流程 3：将上次中断的处理中任务标记为可手动重试的失败状态。
             async with db_ctx(settings.database_path) as conn:
                 await mark_interrupted_tasks(conn)
 
-            # P0-05：任务处理注册表 + 处理器 + N 个消费者
+            # 流程 4：构造任务注册表、处理器和指定数量的消费者。
             registry = TaskRegistry()
             llm_client = build_llm_client(settings)
             processor = build_processor(
@@ -75,7 +76,7 @@ def create_app() -> FastAPI:
                 retry_base_delay=settings.auto_retry_base_delay_seconds,
             )
             stop = asyncio.Event()
-            app.state.registry = registry   # 供未来 stop/删除接口访问
+            app.state.registry = registry  # 供删除接口取消正在执行的单个任务。
             app.state.processor = processor
 
             consumers_task = asyncio.create_task(
@@ -92,8 +93,7 @@ def create_app() -> FastAPI:
             try:
                 yield
             finally:
-                # 关闭：先不再领取（stop），等待进行中任务自然完成；
-                # 超时则强停全部进行中任务（写回 PROCESSING_CANCELLED）
+                # 流程 5：停止领取新任务并等待在途任务完成，超时后统一取消。
                 stop.set()
                 try:
                     await asyncio.wait_for(consumers_task, timeout=10)

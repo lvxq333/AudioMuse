@@ -1,4 +1,4 @@
-"""任务接口。P0-06：GET /v1/tasks/{task_id} 查询任务状态。"""
+"""提供任务状态查询和失败任务手动重试接口。"""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ async def get_task(request: Request, task_id: str):
 
 @router.post("/{task_id}/retry")
 async def retry_task(request: Request, task_id: str):
-    """失败任务重试：failed → pending（attempt_no + 1），由消费者重新处理。
+    """为失败任务开启新的处理轮次并重新加入待处理队列。
 
     - 404：任务不存在；
     - 409：状态不允许重试、录音正在删除，或并发重试已被其他请求抢先；
@@ -84,6 +84,7 @@ async def retry_task(request: Request, task_id: str):
     settings = get_settings()
     _validate_id(task_id)
 
+    # 流程 1：确认任务存在且当前状态允许重试。
     async with db_ctx(settings.database_path) as conn:
         row = await get_task_by_id(conn, task_id)
         if row is None:
@@ -94,9 +95,10 @@ async def retry_task(request: Request, task_id: str):
             )
         resetted = await retry_reset_task(conn, task_id=task_id)
     if not resetted:
-        # 条件更新同时检查任务状态与录音生命周期，避免删除中的任务重新排队。
+        # 流程 2：条件更新失败时返回状态冲突，避免重复重试或删除竞争。
         raise ConflictError("任务状态已变化或录音正在删除，无法重试")
 
+    # 流程 3：返回新业务轮次，任务由消费者异步领取。
     return ok(
         data={
             "task_id": task_id,

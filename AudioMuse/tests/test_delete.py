@@ -1,4 +1,4 @@
-"""P0-08 删除录音测试。
+"""验证录音删除、关联数据清理及删除失败续扫行为。
 
 通过真实链路（lifespan + 消费者，ASR 100% 失败制造稳定 failed 态）
 构造录音再删除，验证：删除后 DB 行/任务/文件均消失、列表排除、
@@ -80,7 +80,7 @@ def _make_failed(client):
     return rid, tid
 
 
-# ---------- 成功删除 ----------
+# 成功删除
 
 def test_delete_failed_recording_removes_all(client):
     rid, tid = _make_failed(client)
@@ -119,7 +119,7 @@ def test_list_excludes_deleted_recording(client):
     assert all(it["recording_id"] != rid for it in items)
 
 
-# ---------- 文件删除失败 + 续扫 ----------
+# 文件删除失败后续扫
 
 def test_file_delete_failure_keeps_row_then_retry_succeeds(client, monkeypatch):
     """第一次文件删除失败 → 500 不删行；再次 DELETE 续扫成功 → 204。"""

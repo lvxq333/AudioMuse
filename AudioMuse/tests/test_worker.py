@@ -1,4 +1,4 @@
-"""P0-04 worker 测试：原子领取、并发峰值、遗留清理、跨进程锁、优雅退出。
+"""验证消费者的原子领取、并发上限、遗留清理、进程锁和退出行为。
 
 使用独立临时 data 目录与数据库，不碰真实 data/。
 """
@@ -21,7 +21,7 @@ from app.worker.consumer import consume_loop, run_consumers
 from app.worker.lock import DataDirLock
 
 
-# ---------- helpers ----------
+# 测试辅助函数
 
 def _db_path(tmp_path) -> Path:
     return tmp_path / "worker.db"
@@ -79,7 +79,7 @@ async def _wait_tasks_status(db_path, status, expected, timeout=5.0):
         await asyncio.sleep(0.02)
 
 
-# ---------- 1. 原子领取唯一性 ----------
+# 原子领取唯一性
 
 async def test_claim_is_atomic_and_exclusive(tmp_path):
     db_path = _db_path(tmp_path)
@@ -101,7 +101,7 @@ async def test_claim_is_atomic_and_exclusive(tmp_path):
         assert await claim_next_task(conn) is None
 
 
-# ---------- 2. 并发峰值 ≤3 且积压全部消费 ----------
+# 并发峰值与积压消费
 
 async def test_three_consumers_process_all_with_peak_at_most_3(tmp_path):
     db_path = _db_path(tmp_path)
@@ -140,7 +140,7 @@ async def test_three_consumers_process_all_with_peak_at_most_3(tmp_path):
         assert int(row["n"]) == 0
 
 
-# ---------- 3. 启动遗留清理 ----------
+# 启动时清理遗留任务
 
 async def test_mark_interrupted_only_hits_running_states(tmp_path):
     db_path = _db_path(tmp_path)
@@ -184,7 +184,7 @@ async def test_mark_interrupted_only_hits_running_states(tmp_path):
     assert rows[3] == {"status": TaskStatus.DONE.value, "error_code": None}
 
 
-# ---------- 4. 跨进程锁互斥（真实子进程） ----------
+# 跨进程锁互斥
 
 def test_data_dir_lock_is_exclusive_across_processes(tmp_path):
     data_dir = tmp_path / "data"
@@ -218,7 +218,7 @@ def test_data_dir_lock_is_exclusive_across_processes(tmp_path):
     assert "ACQUIRED" in proc.stdout, proc.stdout
 
 
-# ---------- 5. 优雅退出 ----------
+# 消费者退出
 
 async def test_consumer_exits_promptly_on_stop(tmp_path):
     db_path = _db_path(tmp_path)

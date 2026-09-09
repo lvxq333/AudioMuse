@@ -119,8 +119,7 @@ async def remove_file_with_retry(
 
     - 文件本就不存在（missing_ok）视为成功，兼容"已被手动删除"场景；
     - 重试仍失败时返回 False 并记录告警，由调用方决定兜底/人工处理；
-    - 完整治理（启动回收/定时清理/指数退避登记）见 docs/TODO.md，
-      留待 P0 闭环后的加分项阶段评估。
+    - 更完整的残留文件治理方案记录在 docs/TODO.md。
     """
     for i in range(attempts):
         try:

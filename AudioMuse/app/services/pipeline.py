@@ -1,18 +1,4 @@
-"""处理流水线（processor）：把一次任务从 transcribing 推进到终态。
-
-流程（每步独立短事务写回，携带 attempt_no + 期望状态防旧写回）：
-  claim 后（已 transcribing）
-    → ASR Mock 转写（约 20% 失败）
-    → 保存 transcript 并置 summarizing
-    → LLM 摘要（真实或 mock）
-    → 保存 summary_json 并置 done
-  ASR/LLM 明确业务失败 → 当前阶段内最多自动重试 3 次（1/2/4 秒退避）；
-  重试耗尽 → failed + 对应 error_code（ASR_FAILED / LLM_*）；
-  自动重试采用局部计数，不改变表示业务处理轮次的 attempt_no；
-  写回不生效（任务已被删除/停止/进入新一轮）→ 返回 False 即停止后续步骤；
-  被外部取消（CancelledError）→ 直接向上传播，由 registry 的取消流程
-  接手（本文件不吞取消，except Exception 不含 CancelledError）。
-"""
+"""执行录音转写、摘要生成、自动重试及任务状态写回。"""
 
 from __future__ import annotations
 
@@ -118,12 +104,13 @@ def build_processor(
     asr_kwargs: dict = dict(asr_params or {})
 
     async def processor(task: dict) -> None:
+        """处理一轮录音转写与摘要任务，并持久化处理状态和结果。"""
         task_id = task["id"]
         attempt_no = task["attempt_no"]
         recording_id = task["recording_id"]
         logger.info("开始处理任务 task_id=%s attempt_no=%d", task_id, attempt_no)
 
-        # 1) 转写（Mock ASR）
+        # 流程 1：执行录音转写，对明确的 ASR 失败进行阶段内自动重试。
         try:
             transcript = await _run_with_auto_retry(
                 lambda: transcribe(
@@ -145,12 +132,13 @@ def build_processor(
             await _fail(db_path, task, "ASR_FAILED", f"ASR 异常: {exc}")
             return
 
-        # 2) 保存 transcript 并进入 summarizing；写回失效（已删/新轮）则停止
+        # 流程 2：保存转写文本并将任务推进到摘要阶段。
+        # 条件写回失败表示任务已删除或进入新轮次，此时停止旧轮处理。
         if not await _to_summarizing(db_path, task, transcript):
             logger.info("任务已被删除或进入新轮，放弃写回 task_id=%s", task_id)
             return
 
-        # 3) LLM 摘要（超时/结构校验已在 LlmClient 内分类为 LlmError）
+        # 流程 3：生成结构化摘要，对可恢复的 LLM 错误进行自动重试。
         try:
             result = await _run_with_auto_retry(
                 lambda: llm_client.summarize(transcript, task_id=task_id),
@@ -169,7 +157,7 @@ def build_processor(
             await _fail(db_path, task, "LLM_FAILED", "摘要处理发生异常，请重试")
             return
 
-        # 4) 落 done（与 summary_json 同一事务）
+        # 流程 4：保存摘要并在同一事务中将任务更新为完成状态。
         if not await _done(db_path, task, result.to_json()):
             logger.info("任务已完成或删除，放弃写回 task_id=%s", task_id)
             return

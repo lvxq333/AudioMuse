@@ -1,17 +1,4 @@
-"""后台异步消费者。
-
-- 每个消费者是一个 asyncio Task（协程），共享同一事件循环；
-- 循环：原子领取一个 pending 任务 → 交给 processor 处理 → 继续；
-- 每个任务的处理被包装成独立子任务并登记到 TaskRegistry：
-  - 外部停止单个任务（registry.cancel）只取消该子任务——消费者捕获
-    CancelledError 后把该录音标记为可重试失败（PROCESSING_CANCELLED）
-    并继续循环，符合“停一个录音、消费者空闲继续处理其他录音”的契约；
-  - 消费者整体被停（关闭流程）时不存在取消请求标记，CancelledError
-    继续上抛导致本协程退出；
-- 队列模型（P0-04 决定）：数据库中的 pending 行即持久化队列，
-  消费者按 poll_interval 轮询原子领取——服务重启后 pending 自动
-  被继续消费，无内存队列的恢复/一致性窗口。
-"""
+"""从数据库领取待处理任务，并管理消费者执行、取消和退出。"""
 
 from __future__ import annotations
 
@@ -28,14 +15,14 @@ from app.services.registry import TaskRegistry
 logger = logging.getLogger(__name__)
 
 # processor 契约：入参为 claim 返回的任务 dict（含 recording 定位字段），
-# 由实现方自行管理该任务的后续状态写回（须携带 attempt_no 防旧写回覆盖）。
+# 由实现方管理任务状态写回（须携带 attempt_no 防止旧轮次覆盖新轮次）。
 Processor = Callable[[dict], Awaitable[None]]
 
 _POLL_INTERVAL = 0.2  # 无任务时的轮询间隔（秒）
 
 
 async def _mark_stopped(db_path: Path, task: dict) -> None:
-    """单任务被外部停止：置为 failed(PROCESSING_CANCELLED)，可后续 retry/删除。"""
+    """将被外部停止的单个任务置为可重试或删除的失败状态。"""
     async with db(db_path) as conn:
         await fail_task(
             conn,
@@ -53,31 +40,33 @@ async def consume_loop(
     stop: asyncio.Event,
     poll_interval: float = _POLL_INTERVAL,
 ) -> None:
-    """单个消费者的主循环：领取 → 处理 → 领取……直到 stop 置位。"""
+    """持续领取并处理任务，直到收到消费者停止信号。"""
     logger.info("消费者启动")
     try:
         while not stop.is_set():
+            # 流程 1：原子领取一个 pending 任务。
             task = None
             async with db(db_path) as conn:
                 task = await claim_next_task(conn)
 
             if task is None:
-                # 无待处理任务：短暂退避，避免空转刷库
+                # 流程 2：无任务时异步退避，避免持续轮询数据库。
                 await asyncio.sleep(poll_interval)
                 continue
 
+            # 流程 3：注册并执行任务，使删除接口可以按任务取消。
             try:
                 proc_task = registry.start(task["id"], processor(task))
                 try:
                     await proc_task
                 except asyncio.CancelledError:
                     if registry.was_cancel_requested(task["id"]):
-                        # 该录音的处理被单独停止：标记可重试失败，消费者继续
+                        # 流程 4：单任务取消时写入失败状态，消费者继续处理下一项。
                         logger.info("任务处理被外部停止 task_id=%s", task["id"])
                         await _mark_stopped(db_path, task)
                         registry.ack_cancel(task["id"])
                         continue
-                    raise  # 消费者整体被停
+                    raise  # 取消来源是消费者本身时退出循环。
             except Exception:
                 # processor 不应抛未分类异常；此处兜底防单个任务异常杀死消费者
                 logger.exception(

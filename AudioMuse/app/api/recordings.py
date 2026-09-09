@@ -1,4 +1,4 @@
-"""录音接口。P0-03：POST /v1/recordings 上传。"""
+"""提供录音上传、分页查询、详情查询和删除接口。"""
 
 from __future__ import annotations
 
@@ -76,16 +76,20 @@ async def upload_recording(
         default=None, alias="Idempotency-Key"
     ),
 ):
-    """上传录音：落盘并创建 pending 任务后立即返回 202，不等待处理。"""
+    """保存上传的录音并创建异步处理任务，支持可选幂等键。"""
     settings = get_settings()
+
+    # 流程 1：校验文件字段和可选幂等键。
     if file is None:
         raise BadRequestError("缺少文件字段 file")
     idempotency_key = _normalize_idempotency_key(idempotency_key)
 
+    # 流程 2：流式保存文件并计算内容哈希。
     stored = await persist_upload(
         file, settings.recordings_dir, max_bytes=settings.max_upload_bytes
     )
     task_id = uuid.uuid4().hex
+    # 流程 3：在同一事务中创建录音及其 pending 任务。
     try:
         async with db_ctx(settings.database_path) as conn:
             await create_recording_and_task(
@@ -100,7 +104,8 @@ async def upload_recording(
                 file_sha256=stored.file_sha256,
             )
     except aiosqlite.IntegrityError as exc:
-        # 同一幂等键的并发请求由唯一索引裁决；输家清理自己的文件后复用赢家。
+        # 流程 4：唯一键冲突时清理本次文件，并校验是否可以复用已有任务。
+        # 唯一索引负责裁决同一幂等键的并发请求。
         existing = None
         if idempotency_key is not None:
             try:
@@ -147,8 +152,8 @@ async def upload_recording(
             request_id=getattr(request.state, "request_id", None),
         )
     except Exception as exc:
-        # 文件已落盘但 DB 写入失败：先重试清理孤儿文件（相对路径入日志供人工兜底），
-        # 再抛出语义明确的业务错误——避免用户看到裸 500 误以为上传成功
+        # 流程 4：数据库写入失败时清理已经落盘的文件。
+        # 相对路径写入日志，便于清理失败时定位孤儿文件。
         await _cleanup_new_upload(settings, stored)
         logger.error(
             "上传落库失败 recording_id=%s size=%d",
@@ -157,6 +162,7 @@ async def upload_recording(
         )
         raise AppError("录音上传失败，请稍后重试", code="UPLOAD_FAILED") from exc
 
+    # 流程 5：返回新录音和任务标识，不等待后台处理完成。
     logger.info(
         "上传完成 recording_id=%s task_id=%s size=%d",
         stored.recording_id, task_id, stored.size_bytes,
@@ -237,7 +243,7 @@ async def get_recording(request: Request, recording_id: str):
 
 @router.delete("/{recording_id}", status_code=204)
 async def delete_recording(request: Request, recording_id: str):
-    """删除录音：置 deleting → 取消进行中处理 → 删文件 → 删数据库行。
+    """删除录音文件、处理任务及录音记录。
 
     - 404：录音不存在（或行已被删）；
     - 5xx(RECORDING_DELETE_FAILED)：文件清理失败——保留 deleting 状态，
@@ -252,15 +258,15 @@ async def delete_recording(request: Request, recording_id: str):
     if row is None:
         raise NotFoundError("录音不存在")
 
-    # 1) 置 deleting（首次或续扫皆可：已是 deleting 也继续走清理）
+    # 流程 1：将录音标记为 deleting；已在删除中的录音继续执行清理。
     async with db_ctx(settings.database_path) as conn:
         await mark_recording_deleting(conn, recording_id=recording_id)
 
-    # 2) 若该任务正在处理：取消处理器（消费者停手并继续处理其他录音）
+    # 流程 2：取消该录音正在执行的处理任务，不停止消费者。
     registry: "TaskRegistry" = request.app.state.registry
     registry.cancel(row["task_id"])
 
-    # 3) 删除磁盘文件（不存在视为成功；失败不删行，保留 deleting 供续扫）
+    # 流程 3：删除磁盘文件；失败时保留 deleting 状态供再次删除。
     storage_path = Path(settings.data_dir) / row["storage_path"]
     if not await remove_file_with_retry(storage_path):
         logger.error(
@@ -272,7 +278,7 @@ async def delete_recording(request: Request, recording_id: str):
             code="RECORDING_DELETE_FAILED",
         )
 
-    # 4) 删除数据库行（tasks 经外键级联删除）
+    # 流程 4：删除录音记录，并通过外键级联删除关联任务。
     async with db_ctx(settings.database_path) as conn:
         deleted = await delete_recording_row(conn, recording_id=recording_id)
     if not deleted:

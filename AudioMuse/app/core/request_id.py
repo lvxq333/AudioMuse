@@ -2,7 +2,7 @@
 
 为每个 HTTP 请求读取 X-Request-ID 头（缺失则生成），
 存入 scope state 供日志/错误/成功响应共用，并在响应头回写。
-选用纯 ASGI 实现，避免后续 SSE 流式响应被 BaseHTTPMiddleware 缓冲。
+选用纯 ASGI 实现，避免 SSE 流式响应被 BaseHTTPMiddleware 缓冲。
 """
 
 from __future__ import annotations

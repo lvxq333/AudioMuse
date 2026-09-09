@@ -1,4 +1,4 @@
-"""P0-05 pipeline/registry/consumer 取消语义测试。
+"""验证摘要结构、处理流水线错误分类及任务取消行为。
 
 全部使用确定性替身：LLM 走 mock 分支或 httpx.MockTransport（不出网），
 ASR 走毫秒级 + 注入假 sleep；不依赖真实网络与随机源。
@@ -20,7 +20,7 @@ from app.services.pipeline import build_processor
 from app.services.registry import TaskRegistry
 from app.worker.consumer import consume_loop
 
-# ---------- helpers ----------
+# 测试辅助函数
 
 _FAST_ASR = {"min_seconds": 0.001, "max_seconds": 0.002,
              "failure_threshold": 0.0}
@@ -65,7 +65,7 @@ def _mock_client():
     return LlmClient(api_key="", base_url="", model="", timeout_seconds=1)
 
 
-# ---------- 1. LLM 结构校验（第一层） ----------
+# LLM 输出结构校验
 
 def test_parse_and_validate_ok():
     result = parse_and_validate(
@@ -91,7 +91,7 @@ def test_parse_and_validate_tolerates_code_fence():
     assert r.summary == "s"
 
 
-# ---------- 2. pipeline：成功路径 ----------
+# 处理成功
 
 async def test_pipeline_success_to_done(tmp_path):
     db_path = tmp_path / "p.db"
@@ -110,7 +110,7 @@ async def test_pipeline_success_to_done(tmp_path):
     assert row["summary_json"]
 
 
-# ---------- 3. pipeline：ASR 失败 → ASR_FAILED，且不调用 LLM ----------
+# ASR 失败
 
 async def test_pipeline_asr_failure_marks_failed_and_skips_llm(tmp_path):
     db_path = tmp_path / "p.db"
@@ -140,7 +140,7 @@ async def test_pipeline_asr_failure_marks_failed_and_skips_llm(tmp_path):
     assert row["transcript"] is None
 
 
-# ---------- 4. pipeline：LLM 超时/非法输出 → 对应错误码 ----------
+# LLM 超时与非法输出
 
 async def _run_with_llm_output(tmp_path, handler):
     db_path = tmp_path / "p.db"
@@ -319,7 +319,7 @@ async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
         get_settings.cache_clear()
 
 
-# ---------- 5. 单任务取消：消费者继续 ----------
+# 单任务取消后消费者继续运行
 
 async def test_cancel_one_task_consumer_keeps_working(tmp_path):
     db_path = tmp_path / "p.db"

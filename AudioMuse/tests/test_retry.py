@@ -1,4 +1,4 @@
-"""P0-07 失败任务重试测试。
+"""验证失败任务手动重试、并发冲突和旧轮次写回保护。
 
 主 fixture 让 ASR 100% 失败 → 上传的任务自动流转到 failed，
 从而通过真实链路制造可重试状态；再用 API/DB 断言各分支。
@@ -77,7 +77,7 @@ def _make_failed(client):
     return tid
 
 
-# ---------- 成功路径 ----------
+# 重试成功
 
 def test_retry_accepts_failed_task(client):
     tid = _make_failed(client)
@@ -104,7 +104,7 @@ def test_retry_clears_previous_error_and_results(client):
     assert body["finished_at"] is None
 
 
-# ---------- 非法/冲突 ----------
+# 非法请求与状态冲突
 
 def test_retry_not_found_404(client):
     resp = client.post(
@@ -138,7 +138,7 @@ def test_concurrent_retries_only_one_succeeds(client):
     assert codes.count(409) == 19
 
 
-# ---------- 删除中的录音不可重试 ----------
+# 删除中的录音不可重试
 
 def test_retry_rejects_failed_delete_then_delete_can_finish(client, monkeypatch):
     """删除失败不能重新排队；保留全部任务字段，仍可再次删除完成清理。"""
@@ -210,7 +210,7 @@ def test_retry_rechecks_lifecycle_after_api_lookup(client, monkeypatch):
     assert task["error_code"] == "ASR_FAILED"
 
 
-# ---------- 旧轮次写回失效 ----------
+# 旧轮次写回失效
 
 def test_old_attempt_writeback_is_rejected(client):
     """旧轮次（attempt=1）的结果写回不得覆盖新一轮（attempt=2）。"""
