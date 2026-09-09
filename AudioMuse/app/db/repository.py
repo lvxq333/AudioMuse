@@ -7,6 +7,7 @@ P0-03 提供上传创建；P0-04 追加原子领取与启动清理；
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import aiosqlite
@@ -152,6 +153,118 @@ async def mark_interrupted_tasks(
         affected = cursor.rowcount
         await conn.commit()
         return int(affected)
+    except Exception:
+        await conn.rollback()
+        raise
+
+
+async def mark_summarizing(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: str,
+    attempt_no: int,
+    transcript: str,
+    now: Optional[int] = None,
+) -> bool:
+    """转写成功：保存 transcript 并把状态置为 summarizing。
+
+    带 attempt_no + 期望状态条件，防止旧轮次/已删除任务被覆盖写回；
+    参数非法（transcript 为空）抛 ValueError（调用方 bug），写回不生效
+    返回 False（过期/竞争，正常业务情形）。
+    """
+    if not transcript or not transcript.strip():
+        raise ValueError("transcript 不能为空")
+    now = now or now_utc_ms()
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "UPDATE tasks SET status=?, transcript=?, updated_at=?"
+            " WHERE id=? AND attempt_no=? AND status=?",
+            (
+                TaskStatus.SUMMARIZING.value, transcript, now,
+                task_id, attempt_no, TaskStatus.TRANSCRIBING.value,
+            ),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
+    except Exception:
+        await conn.rollback()
+        raise
+
+
+async def finish_task_done(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: str,
+    attempt_no: int,
+    summary_json: str,
+    now: Optional[int] = None,
+) -> bool:
+    """摘要完成：写入 summary_json 并置为 done（结果与状态同一事务）。
+
+    兜底校验：summary_json 必须是可解析的 JSON 对象（业务字段结构由
+    LLM 适配层校验，本层只保证“能落库、是对象”）。
+    """
+    try:
+        parsed = json.loads(summary_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("summary_json 必须是合法 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("summary_json 必须是 JSON 对象")
+    now = now or now_utc_ms()
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "UPDATE tasks SET status=?, summary_json=?, finished_at=?, updated_at=?"
+            " WHERE id=? AND attempt_no=? AND status=?",
+            (
+                TaskStatus.DONE.value, summary_json, now, now,
+                task_id, attempt_no, TaskStatus.SUMMARIZING.value,
+            ),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
+    except Exception:
+        await conn.rollback()
+        raise
+
+
+async def fail_task(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: str,
+    attempt_no: int,
+    error_code: str,
+    error_message: str,
+    now: Optional[int] = None,
+) -> bool:
+    """把正在处理（transcribing/summarizing）的任务置为 failed。
+
+    error_code 必须来自 ErrorCode 白名单，error_message 非空；
+    写回不生效（任务已不在执行中状态）返回 False。
+    """
+    if error_code not in {e.value for e in ErrorCode}:
+        raise ValueError(f"非法 error_code: {error_code}")
+    if not error_message:
+        raise ValueError("error_message 不能为空")
+    now = now or now_utc_ms()
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "UPDATE tasks SET status=?, error_code=?, error_message=?, "
+            "finished_at=?, updated_at=?"
+            " WHERE id=? AND attempt_no=? AND status IN (?, ?)",
+            (
+                TaskStatus.FAILED.value, error_code, error_message, now, now,
+                task_id, attempt_no,
+                TaskStatus.TRANSCRIBING.value, TaskStatus.SUMMARIZING.value,
+            ),
+        )
+        ok = cursor.rowcount == 1
+        await conn.commit()
+        return bool(ok)
     except Exception:
         await conn.rollback()
         raise
