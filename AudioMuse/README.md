@@ -191,7 +191,7 @@ failed --POST retry--> pending（attempt_no + 1，清理旧结果）
 | 自动重试 | 阶段内局部计数 + asyncio 指数退避 | 最多重试 3 次；不改表、不改变业务轮次，ASR/LLM 独立重试 |
 | 上传幂等 | 可选 Idempotency-Key + SHA-256 + 唯一索引 | 同键同文件复用任务，同键不同文件冲突，并发输家清理文件 |
 | LLM | OpenAI 兼容 chat/completions + 本地 mock 兜底 | DeepSeek/智谱/Groq 等通用；无 Key 自动 mock（README 说明，题目允许但降分） |
-| 事务 | 显式 BEGIN IMMEDIATE/COMMIT/ROLLBACK | aiosqlite 的 `async with conn` 并非事务（见「踩坑」） |
+| 事务 | 显式 BEGIN IMMEDIATE/COMMIT/ROLLBACK | aiosqlite 的 `async with conn` 并非事务 |
 
 ## 服务重启行为
 
@@ -229,15 +229,8 @@ AUDIOMUSE_LLM_TIMEOUT_SECONDS=30
 6. 未做加分项：SSE 流式摘要、公开部署、
    运行中断点续跑（均预留模块边界，见 docs/TODO.md）。
 
-## 开发踩坑记录（答辩备查）
+## 测试注意事项
 
-- **aiosqlite 的 `async with conn` 不是事务**：每次执行会 `thread.start()`，同连接第二次起抛
-  `RuntimeError`——所有事务统一显式 `BEGIN IMMEDIATE / COMMIT / ROLLBACK`。
-- **命名遮蔽**（本项目踩了三次）：①API 函数与 repository 导入同名导致无限递归
-  （`list_recordings`）；②局部变量 `ok` 遮蔽响应函数 `ok()`；规避：导入用别名
-  （`repo_list_recordings`）、避免 `ok/list` 等通用名。
-- **Python 3.9**：FastAPI 参数/响应模型字段不可用 `X | None` 运行时求值，用
-  `Optional[...]`（普通函数内注解不受限）。
 - **MockTransport 不应用 httpx 超时**：测 LLM 超时需直接抛 `httpx.ReadTimeout`。
 - **测试隔离**：lifespan/端到端用例须强制 `AUDIOMUSE_LLM_API_KEY=""` 与毫秒级 ASR，
   否则受开发者本机 `.env` 真实 Key/网络影响而 flaky。
