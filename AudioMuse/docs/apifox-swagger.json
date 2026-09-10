@@ -1,0 +1,313 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "AudioMuse 录音转写服务",
+    "version": "0.1.0",
+    "description": "AudioMuse 录音转写服务接口，适用于 Apifox 接口管理与开发阶段调试。"
+  },
+  "host": "127.0.0.1:8010",
+  "basePath": "/",
+  "schemes": [
+    "http"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "tags": [
+    {
+      "name": "meta",
+      "description": "服务元信息"
+    },
+    {
+      "name": "recordings",
+      "description": "录音管理"
+    },
+    {
+      "name": "tasks",
+      "description": "任务管理"
+    }
+  ],
+  "paths": {
+    "/v1/recordings": {
+      "post": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Upload Recording",
+        "description": "保存上传的录音并创建异步处理任务，支持可选幂等键。",
+        "operationId": "upload_recording_v1_recordings_post",
+        "consumes": [
+          "multipart/form-data"
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "type": "string",
+            "title": "Idempotency-Key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "List Recordings",
+        "description": "录音列表：分页、按创建时间倒序，含每条的最新任务状态。",
+        "operationId": "list_recordings_v1_recordings_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码，从 1 开始",
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "title": "Page"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数 1~100",
+            "type": "integer",
+            "maximum": 100,
+            "minimum": 1,
+            "default": 20,
+            "title": "Page Size"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    },
+    "/v1/recordings/{recording_id}": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Get Recording",
+        "description": "录音详情；处理完成（done）时包含 transcript 与结构化摘要。",
+        "operationId": "get_recording_v1_recordings__recording_id__get",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "title": "Recording Id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Delete Recording",
+        "description": "删除录音文件、处理任务及录音记录。\n\n- 404：录音不存在（或行已被删）；\n- 5xx(RECORDING_DELETE_FAILED)：文件清理失败——保留 deleting 状态，\n  再次 DELETE 会“续扫”继续清理（已支持 deleting 行重试）；\n- 204：删除完成（无响应体）。",
+        "operationId": "delete_recording_v1_recordings__recording_id__delete",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "title": "Recording Id"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task",
+        "description": "查询任务状态（processing 中直接体现 transcribing/summarizing 阶段）。",
+        "operationId": "get_task_v1_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "title": "Task Id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{task_id}/retry": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Retry Task",
+        "description": "为失败任务开启新的处理轮次并重新加入待处理队列。\n\n- 404：任务不存在；\n- 409：状态不允许重试、录音正在删除，或并发重试已被其他请求抢先；\n- 202：重试已受理，返回 task_id / status=pending / attempt_no（已 +1）。",
+        "operationId": "retry_task_v1_tasks__task_id__retry_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "title": "Task Id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Healthz",
+        "description": "存活探针。",
+        "operationId": "healthz_healthz_get",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "schema": {
+              "$ref": "#/definitions/AnyResponse"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "UploadRecordingForm": {
+      "type": "object",
+      "required": [
+        "file"
+      ],
+      "properties": {
+        "file": {
+          "type": "file",
+          "description": "录音文件（multipart/form-data）"
+        }
+      }
+    },
+    "AnyResponse": {
+      "type": "object",
+      "description": "业务响应，具体 data 字段由接口决定"
+    },
+    "HTTPValidationError": {
+      "type": "object",
+      "properties": {
+        "detail": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ValidationError"
+          }
+        }
+      }
+    },
+    "ValidationError": {
+      "type": "object",
+      "required": [
+        "loc",
+        "msg",
+        "type"
+      ],
+      "properties": {
+        "loc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "msg": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
