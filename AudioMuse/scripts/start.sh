@@ -15,7 +15,7 @@ if [ ! -x "$VENV/bin/python" ]; then
   "$VENV/bin/pip" install --quiet -e ".[dev]"
 fi
 
-PORT="${PORT:-8000}"
+PORT="${PORT:-8010}"
 HOST="${HOST:-0.0.0.0}"
 # Keep the array nonempty for macOS Bash 3.2 with `set -u`.
 CMD=("$VENV/bin/uvicorn" app.main:app --host "$HOST" --port "$PORT")

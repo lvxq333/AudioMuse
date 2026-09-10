@@ -1,12 +1,12 @@
 # AudioMuse API 调试文件（VS Code REST Client / IntelliJ HTTP Client 可直接运行）
 #
-# 前置：先启动服务（scripts/start.sh），默认 http://127.0.0.1:8000
+# 前置：先启动服务（scripts/start.sh），默认 http://127.0.0.1:8010
 # 上传需真实文件：本文件引用 docs/sample.wav（占位音频，扩展名校验通过即可）。
 #
 # 说明：上传接口返回 recording_id / task_id 后，把下列 @recording_id / @task_id
 # 占位符替换为实际返回值，即可继续调查询/重试/删除。
 
-@host = http://127.0.0.1:8000
+@host = http://127.0.0.1:8010
 @recording_id = 替换为上传返回的 recording_id
 @task_id = 替换为上传返回的 task_id
 @idempotency_key = upload-demo-001

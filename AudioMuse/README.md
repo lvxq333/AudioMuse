@@ -40,16 +40,16 @@ AudioMuse/
 
 ```bash
 cp .env.example .env        # 按需修改配置（LLM Key 见下）
-scripts/start.sh            # 一键启动（首次自动建 .venv 并安装依赖），默认 0.0.0.0:8000
+scripts/start.sh            # 一键启动（首次自动建 .venv 并安装依赖），默认 0.0.0.0:8010
 # 或手动：
 #   python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-#   .venv/bin/uvicorn app.main:app --port 8000
+#   .venv/bin/uvicorn app.main:app --port 8010
 ```
 
 验证：
 
 ```bash
-curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8010/healthz
 # => {"code":"OK","message":"ok","data":{"status":"ok","version":"0.1.0"},"request_id":"..."}
 ```
 
@@ -57,7 +57,7 @@ curl http://127.0.0.1:8000/healthz
 
 ```bash
 # 上传（docs/sample.wav 为占位音频，扩展名校验通过）
-curl -F "file=@docs/sample.wav" http://127.0.0.1:8000/v1/recordings
+curl -F "file=@docs/sample.wav" http://127.0.0.1:8010/v1/recordings
 # 稍等片刻后查询任务/详情，done 后即含 transcript 与 summary
 ```
 
