@@ -262,6 +262,7 @@ async def test_llm_failure_consumer_continues_and_api_retry_succeeds(
     )
     monkeypatch.setenv("AUDIOMUSE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIOMUSE_LLM_API_KEY", "")
+    monkeypatch.setenv("AUDIOMUSE_ASR_API_KEY", "")
     monkeypatch.setenv("AUDIOMUSE_MAX_CONCURRENCY", "1")
     monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0")
     monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0")

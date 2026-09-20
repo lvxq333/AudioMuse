@@ -1,8 +1,7 @@
 # AudioMuse：录音转写与智能摘要服务
 
-后端实习生笔试项目。客户端上传音频文件，服务端**异步**完成「转写」（Mock ASR，
-模拟真实行为）与「智能摘要」（真实 LLM，可 mock 兜底），客户端可查询任务状态
-与结果。
+录音转写与智能摘要应用。用户可通过 Web 工作台上传音频或直接录音，服务端
+**异步**完成「真实 ASR 转写」与「智能摘要」，并支持未配置外部服务时的本地 Mock。
 
 GitHub 仓库：[https://github.com/lvxq333/AudioMuse](https://github.com/lvxq333/AudioMuse)
 
@@ -18,6 +17,7 @@ GitHub 仓库：[https://github.com/lvxq333/AudioMuse](https://github.com/lvxq33
 AudioMuse/
 ├── app/
 │   ├── main.py             # FastAPI 应用工厂 + lifespan（迁移/独占锁/消费者启停）
+│   ├── frontend/           # 原生响应式 Web 工作台（上传/录音/进度/结果管理）
 │   ├── config.py           # 配置（环境变量前缀 AUDIOMUSE_，支持 .env）
 │   ├── api/                # v1 HTTP 路由：recordings（上传/列表/详情/删除）、tasks（查询/重试）
 │   ├── core/               # 统一成功/错误响应、X-Request-ID 中间件、日志
@@ -53,6 +53,24 @@ curl http://127.0.0.1:8010/healthz
 # => {"code":"OK","message":"ok","data":{"status":"ok","version":"0.1.0"},"request_id":"..."}
 ```
 
+浏览器打开 [http://127.0.0.1:8010](http://127.0.0.1:8010) 即可使用完整工作台。
+
+## Linux 服务器部署
+
+仓库提供用户级 systemd 服务文件 `deploy/audiomuse.service`，默认部署目录为
+`$HOME/apps/audiomuse`、监听 `0.0.0.0:8010`。将配置写入项目根目录 `.env` 后：
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/audiomuse.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now audiomuse.service
+systemctl --user status audiomuse.service
+```
+
+服务更新可执行 `git pull --ff-only`、重新安装依赖，再运行
+`systemctl --user restart audiomuse.service`。密钥只保存在服务器 `.env`，不要提交仓库。
+
 端到端体验（另开终端）：用 `api.http`（VS Code REST Client）或：
 
 ```bash
@@ -77,7 +95,7 @@ flowchart LR
     DB -.pending 持久队列.-> W[消费者×3 asyncio]
     W -->|原子领取 claim| DB
     W --> P[processor 流水线]
-    P --> A[Mock ASR 5-15s/20%失败/自动重试]
+    P --> A[真实 ASR / Mock 兜底 / 自动重试]
     P --> L[LLM 摘要/超时/校验/自动重试]
     P -->|条件写回| DB
     R[Registry 任务注册表] -.单任务取消.-> P
@@ -218,6 +236,22 @@ AUDIOMUSE_LLM_TIMEOUT_SECONDS=30
 - **真实调用记录**：`smoke_llm.py` 对示例 transcript 用 DeepSeek 返回合法
   `{summary, key_points, todos}`，经结构校验通过（输出见交付说明）。
 
+## 真实 ASR 配置
+
+ASR 使用 OpenAI 兼容的 `POST /audio/transcriptions` multipart 协议。后期只需在
+`.env` 填入服务商参数，无需修改代码：
+
+```dotenv
+AUDIOMUSE_ASR_API_KEY=sk-...
+AUDIOMUSE_ASR_BASE_URL=https://api.openai.com/v1
+AUDIOMUSE_ASR_MODEL=whisper-1
+AUDIOMUSE_ASR_LANGUAGE=zh
+AUDIOMUSE_ASR_TIMEOUT_SECONDS=120
+```
+
+可替换为任何兼容该协议的 ASR 服务地址和模型名。未配置 `ASR_API_KEY` 时自动使用
+Mock，保证本地界面和完整处理链可直接演示。API Key 仅由服务端读取，不会下发浏览器。
+
 ## 已知问题与未完成项（详见 docs/TODO.md）
 
 1. **Mock 摘要降分风险**：未配置 Key 时摘要为本地 mock，仅结构合法、无真实语义。
@@ -243,6 +277,8 @@ AUDIOMUSE_LLM_TIMEOUT_SECONDS=30
 | AUDIOMUSE_MAX_CONCURRENCY | 3 | 消费者数量（全局并发处理上限） |
 | AUDIOMUSE_MAX_UPLOAD_BYTES | 52428800 | 上传大小上限（50 MiB） |
 | AUDIOMUSE_LLM_API_KEY / _BASE_URL / _MODEL / _TIMEOUT_SECONDS | 空 / OpenAI / 空 / 30 | LLM 配置 |
+| AUDIOMUSE_ASR_API_KEY / _BASE_URL / _MODEL | 空 / OpenAI / whisper-1 | 真实 ASR 配置；Key 为空时 Mock |
+| AUDIOMUSE_ASR_TIMEOUT_SECONDS / _LANGUAGE / _PROMPT | 120 / zh / 空 | ASR 请求与识别参数 |
 | AUDIOMUSE_ASR_MIN/MAX_SECONDS、_FAILURE_THRESHOLD | 5 / 15 / 0.2 | Mock ASR 参数 |
 | AUDIOMUSE_AUTO_RETRY_MAX_RETRIES | 3 | ASR/LLM 每阶段自动重试上限（允许 0～3） |
 | AUDIOMUSE_AUTO_RETRY_BASE_DELAY_SECONDS | 1 | 指数退避基础秒数；默认形成 1/2/4 秒等待 |

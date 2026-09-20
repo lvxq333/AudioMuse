@@ -102,6 +102,7 @@ def build_processor(
     if retry_base_delay < 0:
         raise ValueError("retry_base_delay 不能小于 0")
     asr_kwargs: dict = dict(asr_params or {})
+    asr_data_dir = asr_kwargs.pop("data_dir", None)
 
     async def processor(task: dict) -> None:
         """处理一轮录音转写与摘要任务，并持久化处理状态和结果。"""
@@ -112,10 +113,17 @@ def build_processor(
 
         # 流程 1：执行录音转写，对明确的 ASR 失败进行阶段内自动重试。
         try:
+            audio_path = (
+                Path(asr_data_dir) / task["storage_path"]
+                if asr_data_dir is not None else None
+            )
             transcript = await _run_with_auto_retry(
                 lambda: transcribe(
                     recording_id=recording_id, task_id=task_id,
-                    attempt_no=attempt_no, **asr_kwargs,
+                    attempt_no=attempt_no,
+                    audio_path=audio_path,
+                    original_filename=task.get("original_filename", "audio.wav"),
+                    **asr_kwargs,
                 ),
                 stage="transcribing", task_id=task_id, attempt_no=attempt_no,
                 retryable_exceptions=(AsrFailure,),

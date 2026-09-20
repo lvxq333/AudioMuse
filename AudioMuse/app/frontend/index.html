@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f1e8">
+  <title>AudioMuse · 声音工作台</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="page-noise" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="AudioMuse 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span>AudioMuse</span>
+    </a>
+    <div class="service-state"><span id="healthDot" class="health-dot"></span><span id="healthText">连接服务中</span></div>
+    <button id="refreshButton" class="icon-button" type="button" title="刷新列表" aria-label="刷新列表">
+      <svg viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-14.9-4M4 4v4h4M4 13a8.1 8.1 0 0 0 14.9 4M20 20v-4h-4"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="eyebrow"><span></span> AI RECORDING STUDIO</div>
+      <h1>让每一段声音，<br><em>变成清晰的行动。</em></h1>
+      <p>上传音频或直接开始录制，自动完成文字转写、内容摘要与待办提取。</p>
+    </section>
+
+    <section class="studio-grid">
+      <article class="capture-card panel">
+        <div class="panel-heading">
+          <div><span class="step">01</span><h2>添加一段声音</h2></div>
+          <span class="privacy">仅本地服务处理</span>
+        </div>
+
+        <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+          <input id="fileInput" type="file" accept=".wav,.mp3,.m4a,.aac,audio/*" hidden>
+          <div class="drop-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          </div>
+          <strong>拖入音频文件</strong>
+          <span>或点击浏览 · WAV / MP3 / M4A / AAC · 最大 50 MB</span>
+          <div id="selectedFile" class="selected-file" hidden></div>
+        </div>
+
+        <div class="or"><span>或者</span></div>
+
+        <div id="recorder" class="recorder">
+          <button id="recordButton" class="record-button" type="button"><span></span><b>开始录音</b></button>
+          <div class="recorder-meta">
+            <div><strong id="recordTime">00:00</strong><span id="recordHint">使用设备麦克风录制</span></div>
+            <canvas id="waveform" width="420" height="56" aria-label="实时录音波形"></canvas>
+          </div>
+        </div>
+        <button id="uploadButton" class="primary-button" type="button" disabled>
+          <span>开始智能处理</span><svg viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+        </button>
+      </article>
+
+      <aside class="flow-card panel">
+        <div class="panel-heading"><div><span class="step">02</span><h2>智能处理流程</h2></div></div>
+        <div class="flow-list">
+          <div class="flow-item"><span class="flow-icon coral">波</span><div><b>语音转写</b><small>真实 ASR 识别语音内容</small></div><i>01</i></div>
+          <div class="flow-line"></div>
+          <div class="flow-item"><span class="flow-icon amber">摘</span><div><b>内容摘要</b><small>提炼主题与核心观点</small></div><i>02</i></div>
+          <div class="flow-line"></div>
+          <div class="flow-item"><span class="flow-icon ink">行</span><div><b>行动提取</b><small>整理关键要点和待办</small></div><i>03</i></div>
+        </div>
+        <div class="flow-note"><span>✦</span><p>任务提交后可离开页面，后台会继续处理，并在历史记录中保存结果。</p></div>
+      </aside>
+    </section>
+
+    <section class="library">
+      <div class="section-heading">
+        <div><span class="step">03</span><h2>声音资料库</h2></div>
+        <div class="stats"><span><b id="totalCount">0</b> 全部</span><span><b id="activeCount">0</b> 处理中</span></div>
+      </div>
+      <div class="filter-row">
+        <div id="filters" class="filters">
+          <button class="active" data-filter="all">全部</button><button data-filter="active">处理中</button><button data-filter="done">已完成</button><button data-filter="failed">失败</button>
+        </div>
+        <label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input id="searchInput" type="search" placeholder="搜索文件名"></label>
+      </div>
+      <div id="recordingList" class="recording-list" aria-live="polite"></div>
+      <div id="emptyState" class="empty-state" hidden><div class="empty-mark">♪</div><h3>还没有声音记录</h3><p>上传第一段音频，让 AudioMuse 帮你整理。</p></div>
+    </section>
+  </main>
+
+  <aside id="detailDrawer" class="detail-drawer" aria-hidden="true">
+    <div class="drawer-backdrop" data-close-drawer></div>
+    <div class="drawer-panel">
+      <button class="drawer-close" type="button" data-close-drawer aria-label="关闭详情">×</button>
+      <div id="detailContent"></div>
+    </div>
+  </aside>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

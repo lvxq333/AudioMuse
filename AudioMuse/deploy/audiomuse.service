@@ -1,0 +1,17 @@
+[Unit]
+Description=AudioMuse recording transcription service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/apps/audiomuse
+EnvironmentFile=-%h/apps/audiomuse/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/apps/audiomuse/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8010
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

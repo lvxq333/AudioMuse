@@ -15,6 +15,7 @@ def client(tmp_path, monkeypatch):
     """临时 data 目录 + 毫秒级 ASR、0 失败、LLM mock（自动处理到 done）。"""
     monkeypatch.setenv("AUDIOMUSE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIOMUSE_LLM_API_KEY", "")
+    monkeypatch.setenv("AUDIOMUSE_ASR_API_KEY", "")
     monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0.001")
     monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0.002")
     monkeypatch.setenv("AUDIOMUSE_ASR_FAILURE_THRESHOLD", "0")

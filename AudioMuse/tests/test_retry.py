@@ -22,6 +22,7 @@ def client(tmp_path, monkeypatch):
     """ASR 100% 失败 + LLM mock：任务上传后自动变成 failed。"""
     monkeypatch.setenv("AUDIOMUSE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIOMUSE_LLM_API_KEY", "")
+    monkeypatch.setenv("AUDIOMUSE_ASR_API_KEY", "")
     monkeypatch.setenv("AUDIOMUSE_ASR_MIN_SECONDS", "0.001")
     monkeypatch.setenv("AUDIOMUSE_ASR_MAX_SECONDS", "0.002")
     monkeypatch.setenv("AUDIOMUSE_ASR_FAILURE_THRESHOLD", "1.0")

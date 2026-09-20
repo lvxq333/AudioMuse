@@ -15,8 +15,11 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.config import get_settings
@@ -36,6 +39,7 @@ from app.worker.lock import DataDirLock
 logger = logging.getLogger(__name__)
 
 __version__ = "0.1.0"
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
 
 def create_app() -> FastAPI:
@@ -68,6 +72,13 @@ def create_app() -> FastAPI:
                 db_path=settings.database_path,
                 llm_client=llm_client,
                 asr_params={
+                    "data_dir": settings.data_dir,
+                    "api_key": settings.asr_api_key,
+                    "base_url": settings.asr_base_url,
+                    "model": settings.asr_model,
+                    "timeout_seconds": settings.asr_timeout_seconds,
+                    "language": settings.asr_language,
+                    "prompt": settings.asr_prompt,
                     "min_seconds": settings.asr_min_seconds,
                     "max_seconds": settings.asr_max_seconds,
                     "failure_threshold": settings.asr_failure_threshold,
@@ -113,6 +124,12 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     register_exception_handlers(app)
     app.include_router(api_router)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def frontend():
+        """AudioMuse Web 工作台。"""
+        return FileResponse(FRONTEND_DIR / "index.html")
 
     @app.get("/healthz", tags=["meta"])
     async def healthz(request: Request):

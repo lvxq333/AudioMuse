@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # LLM 摘要请求超时（秒）
     llm_timeout_seconds: float = 30.0
 
+    # ASR 配置；有 Key 时调用 OpenAI 兼容 /audio/transcriptions，无 Key 用 Mock。
+    asr_api_key: str = ""
+    asr_base_url: str = "https://api.openai.com/v1"
+    asr_model: str = "whisper-1"
+    asr_timeout_seconds: float = Field(default=120.0, gt=0)
+    asr_language: str = "zh"
+    asr_prompt: str = ""
+
     # Mock ASR 参数；测试和演示可通过环境变量缩短耗时或调整失败率。
     asr_min_seconds: float = 5.0
     asr_max_seconds: float = 15.0
